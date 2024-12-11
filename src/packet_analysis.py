@@ -6,38 +6,57 @@ import streamlit as st
 import re
 import os
 import boto3
-import anthropic
-from langchain_aws import BedrockEmbeddings, ChatBedrock
-from langchain_anthropic import ChatAnthropic
+from botocore.exceptions import ClientError
 from dotenv import load_dotenv
 
 load_dotenv()
 
-session = boto3.Session(
+client = boto3.client(
+    service_name="bedrock-runtime",
+    region_name="us-west-2",
     aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID_USER"),
     aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY_USER"),
 )
 
-client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
-
-def query_bedrock(prompt):
+def query_bedrock(prompt, model_id="meta.llama3-1-70b-instruct-v1:0"):
     system_prompt = """You are a network engineer capable of understanding network traffic through info 
                         provided by packets captured\n. You hae been given a csv file to analyze, 
                         where each row represents a packet and the columns represent the packet's attributes."""
     max_tokens = 8192
-    llm = ChatBedrock(
-        region_name=os.getenv("AWS_LOCATION"),
-        model_id="meta.llama3-1-70b-instruct-v1:0",
-        model_kwargs=dict(temperature=0.0),
-        max_tokens=max_tokens,
-    )
-    messages = [
-        ("system", system_prompt),
-        ("human", prompt),
-    ]
-    response = llm.invoke(messages)
-    return response.content
+    formatted_prompt = f"""
+        <|begin_of_text|>
+        <|start_header_id|>system<|end_header_id|>
+        {system_prompt}
+        <|start_header_id|>user<|end_header_id|>
+        {prompt}
+        <|eot_id|>
+        <|start_header_id|>assistant<|end_header_id|>
+        """
+            
+    native_request = {
+        "prompt": formatted_prompt,
+        "max_gen_len": max_tokens,
+        "temperature": 0.0,
+        }
+    request = json.dumps(native_request)
+
+    try:
+        # Invoke the model with the request.
+        response = client.invoke_model(
+        modelId=model_id,
+        body=request,
+        contentType="application/json"
+        )
+
+        # Decode the response body.
+        model_response = json.loads(response["body"].read())
+        response_text = model_response["generation"]
+        return response_text
+
+    except (ClientError, Exception) as e:
+        print(f"ERROR: Can't invoke '{model_id}'. Reason: {e}")
+        return "None"
 
 
 class PcapToDf:
