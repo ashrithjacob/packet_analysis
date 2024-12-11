@@ -19,7 +19,7 @@ client = boto3.client(
 )
 
 
-def query_bedrock(prompt, model_id="meta.llama3-1-70b-instruct-v1:0"):
+def query_bedrock(prompt, model_id="meta.llama3-1-8b-instruct-v1:0"):
     system_prompt = """You are a network engineer capable of understanding network traffic through info 
                         provided by packets captured\n. You hae been given a csv file to analyze, 
                         where each row represents a packet and the columns represent the packet's attributes."""
@@ -56,7 +56,6 @@ def query_bedrock(prompt, model_id="meta.llama3-1-70b-instruct-v1:0"):
 
     except (ClientError, Exception) as e:
         print(f"ERROR: Can't invoke '{model_id}'. Reason: {e}")
-        return "None"
 
 
 class PcapToDf:

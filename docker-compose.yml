@@ -3,12 +3,15 @@ version: "3"
 networks:
   app-network:
 
-
 services:
   app:
-    image: 122610501872.dkr.ecr.us-west-2.amazonaws.com/pcap:latest
-    platform: linux/amd64
+    build: .
     ports:
       - "8501:8501"
-    networks:
-      - app-network
+      #  - "8501:8501"
+  #  image: 122610501872.dkr.ecr.us-west-2.amazonaws.com/pcap:latest
+  #  platform: linux/amd64
+  #  ports:
+  #    - "8501:8501"
+  #  networks:
+  #    - app-network
