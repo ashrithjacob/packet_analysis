@@ -1,24 +1,49 @@
-import json
+import os
 import pandas as pd
 import subprocess
-import numpy as np
 import streamlit as st
 import re
-import os
 import boto3
+import anthropic
+import json
 from botocore.exceptions import ClientError
+from openai import OpenAI
+from mac_vendor_lookup import MacLookup
 from dotenv import load_dotenv
 
+
+# Load environment variables
 load_dotenv()
 
-client = boto3.client(
+# Configure Streamlit
+st.set_page_config(page_title="Packet TAG", page_icon="📄")
+
+# Load OpenAI API key
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+bedrock = boto3.client(
     service_name="bedrock-runtime",
     region_name="us-west-2",
     aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID_USER"),
     aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY_USER"),
 )
+#client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
-def query_bedrock(prompt, model_id="meta.llama3-1-70b-instruct-v1:0"):
+def query_openai(prompt):
+    """
+    Query the OpenAI GPT model with a prompt using the updated client.
+    """
+    try:
+        chat_completion = client.chat.completions.create(
+            model="gpt-4o",  # Specify the model
+            temperature=0.0,  # Set the temperature to 0 for deterministic outputs
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return chat_completion.choices[0].message.content
+    except Exception as e:
+        raise RuntimeError(f"Error querying OpenAI API: {e}")
+
+
+def query_bedrock(prompt,model_id="meta.llama3-1-70b-instruct-v1:0"):
     system_prompt = """You are a network engineer capable of understanding network traffic through info 
                         provided by packets captured\n. You hae been given a csv file to analyze, 
                         where each row represents a packet and the columns represent the packet's attributes."""
@@ -42,7 +67,7 @@ def query_bedrock(prompt, model_id="meta.llama3-1-70b-instruct-v1:0"):
 
     try:
         # Invoke the model with the request.
-        response = client.invoke_model(
+        response = bedrock.invoke_model(
         modelId=model_id,
         body=request,
         contentType="application/json"
@@ -57,52 +82,34 @@ def query_bedrock(prompt, model_id="meta.llama3-1-70b-instruct-v1:0"):
         st.error(f"ERROR: Can't invoke '{model_id}'. Reason: {e}")
 
 
-class PcapToDf:
-    def __init__(self, pcap_file):
-        self.pcap_file = pcap_file
-        self.row = []
-        self.df = pd.DataFrame()
-        self.json_path = self.create_json()
-        self.pcap_to_json()
 
-    def create_json(self):
-        return self.pcap_file.replace(".pcap", ".json")
+# Function to convert .pcap to CSV using a subset of fields
+def pcap_to_csv_with_subset(pcap_path, csv_path):
+    fields = [
+        "frame.number",
+        "frame.time",
+        "frame.len",
+        "ip.src",
+        "ip.dst",
+        "ip.proto",
+        "tcp.srcport",
+        "tcp.dstport",
+        "udp.srcport",
+        "udp.dstport",
+        "eth.src",
+        "eth.dst",
+        "dns.qry.name",
+        "dns.a",
+    ]
+    field_options = " ".join([f"-e {field}" for field in fields])
+    command = f'tshark -r "{pcap_path}" -T fields {field_options} -E header=y -E separator=, > "{csv_path}"'
+    result = subprocess.run(command, shell=True)
+    if result.returncode != 0:
+        raise Exception(f"Error converting PCAP to CSV: {result.stderr}")
 
-    def pcap_to_json(self):
-        command = f"tshark -nlr {self.pcap_file} -T json > {self.json_path}"
-        subprocess.run(command, shell=True)
 
-    def extract_vals_from_dict(self, my_dict):
-        if my_dict is not None:
-            s = my_dict.items()
-            for k, v in s:
-                if isinstance(v, dict):
-                    my_dict = v
-                    self.extract_vals_from_dict(my_dict)
-                else:
-                    self.columns[k] = v
-                    my_dict = None
-
-    def add_row_with_missing_cols(self, df, new_row_dict):
-        # Identify existing and new columns
-        existing_cols = set(df.columns)
-        new_cols = set(new_row_dict.keys()) - existing_cols
-
-        # Add missing columns with NaN
-        # df[list(new_cols)] = np.nan
-        df = df.reindex(columns=list(df.columns) + list(new_cols), fill_value=np.nan)
-        # Add the new row
-        df.loc[len(df)] = new_row_dict
-        return df
-
-    def create_df(self):
-        with open(self.json_path, "r") as file:
-            data_dict = json.load(file)
-        for d in data_dict:
-            self.columns = {}
-            self.extract_vals_from_dict(d)
-            self.df = self.add_row_with_missing_cols(self.df, self.columns)
-        return self.df
+def load_csv_as_dataframe(csv_path):
+    return pd.read_csv(csv_path)
 
 
 def generate_query_prompt(schema, query):
@@ -118,9 +125,9 @@ def generate_query_prompt(schema, query):
     Convert the following question into a Pandas DataFrame query:
     Question: {query}
 
-    Provide the query code only. Do not include explanations. 
-    Use no print,return statements, directly just the query code.
+    Provide the query code only. Do not include explanations.
     """
+
 
 
 def clean_query(query):
@@ -128,8 +135,7 @@ def clean_query(query):
         cleaned_text = re.sub(r"^```\w*\s*|\s*```$", "", query).strip()
     else:
         cleaned_text = query.strip()
-    return cleaned_text.split("\n")
-
+    return cleaned_text.split("\n")[0]
 
 def upload_and_process_pcap():
     MAX_FILE_SIZE_MB = 1
@@ -144,13 +150,15 @@ def upload_and_process_pcap():
         os.makedirs(temp_dir, exist_ok=True)
 
         pcap_path = os.path.join(temp_dir, uploaded_file.name)
+        csv_path = pcap_path.replace(".pcap", ".csv")
 
         with open(pcap_path, "wb") as f:
             f.write(uploaded_file.getvalue())
 
         try:
-            pcap_convertor = PcapToDf(pcap_path)
-            df = pcap_convertor.create_df()
+            pcap_to_csv_with_subset(pcap_path, csv_path)
+            st.success("PCAP file successfully processed and converted to CSV.")
+            df = load_csv_as_dataframe(csv_path)
             st.session_state["pcap_dataframe"] = df
 
         except Exception as e:
@@ -158,6 +166,75 @@ def upload_and_process_pcap():
         finally:
             if os.path.exists(pcap_path):
                 os.remove(pcap_path)
+            if os.path.exists(csv_path):
+                os.remove(csv_path)
+
+class Tools:
+    def mac_vendor_prompt(prompt, model_id="meta.llama3-1-70b-instruct-v1:0"):
+        """
+        Get the vendor information for a given MAC address.
+        """
+        system_prompt = """You are a network engineer capable of understanding network traffic through info 
+                        provided by packets captured\n. You hae been given a csv file to analyze, 
+                        where each row represents a packet and the columns represent the packet's attributes."""
+        max_tokens = 8192
+        formatted_prompt = f"""
+        <|begin_of_text|>
+        <|start_header_id|>system<|end_header_id|>
+        {system_prompt}
+        <|start_header_id|>user<|end_header_id|>
+        {prompt}
+        <|eot_id|>
+        <|start_header_id|>assistant<|end_header_id|>
+        """
+            
+        native_request = {
+        "prompt": formatted_prompt,
+        "max_gen_len": max_tokens,
+        "temperature": 0.0,
+        }
+        request = json.dumps(native_request)
+
+        try:
+            # Invoke the model with the request.
+            response = bedrock.invoke_model(
+            modelId=model_id,
+            body=request,
+            contentType="application/json"
+            )
+
+            # Decode the response body.
+            model_response = json.loads(response["body"].read())
+            response_text = model_response["generation"]
+            return response_text
+
+        except (ClientError, Exception) as e:
+            st.error(f"ERROR: Can't invoke '{model_id}'. Reason: {e}")
+        
+    def filter_json(str_data):
+        code_blocks = re.findall(r'```(?:.*?\n)?(.*?)```', str_data, re.DOTALL)
+        print("Code Blocks:", code_blocks[0])
+        return json.loads(code_blocks[0])
+    
+    def mac_vendor_lookup(json_data):
+        """
+        Lookup the vendor information for a given MAC address.
+        """
+        dict_lookup = {}
+        for key,val in json_data.items():
+            vendor = MacLookup().lookup(val)
+            dict_lookup[key] = vendor
+        return dict_lookup
+
+    def run(prompt):
+        response = Tools.mac_vendor_prompt(prompt)
+        print("Response:", response)
+        json_data = Tools.filter_json(response)
+        print("JSON Data:", json_data)
+        lookup = Tools.mac_vendor_lookup(json_data)
+        print("Lookup:", lookup)
+        return str(lookup), str(response)
+
 
 
 def tag_query_interface():
@@ -177,40 +254,37 @@ def tag_query_interface():
             return
 
         # Generate schema and prompt for query generation
-        print(len(df.columns))
         schema = "\n".join(f"- {col}" for col in df.columns)
         prompt = generate_query_prompt(schema, user_query)
 
         try:
             # Query OpenAI to generate DataFrame query
             with st.spinner("Generating DataFrame query..."):
-                query_code = query_bedrock(prompt)
-            print("QUERY CODE", query_code)
-            query_code_refined = clean_query(query_code)
-            st.write("QUERY CODE REFINED", query_code_refined)
+                query_code = 'df.describe(include="all")'
+            st.markdown(f"### Generated Query:\n```python\n{query_code}\n```")
 
             # Execute the query on the DataFrame
-            result = []
-            result_md = ""
-            for q in query_code_refined:
-                result.append({f"{q}": eval(q, {"df": df})})
-            print("RESULT", result)
+            result = eval(query_code, {"df": df})
             st.markdown("### Query Results:")
-            
-            min_columns = min(150,len(df.columns))
-            for r in result:
-                key = list(r.keys())[0]
-                val = list(r.values())[0].iloc[:, :min_columns]
-                st.dataframe(val)
-                # Convert results to markdown for LLM
-                result_md += f"{key}:{(val.to_markdown(index=False))}" + "\n\n"
-                print("val shape", val.shape)
+            st.dataframe(result)
 
-            # print("RESULT MD",result_md)
+            # Convert results to markdown for LLM
+            result_preview = result.to_markdown(index=False)
+            mac_prompt = f"""
+                From these query results:{result_preview}
+                identify the MAC address of the source and destination IP addresses and return all mac addresses as json
+                repond in the format ``` {{"column_name_1": "mac_address", "column_name_2": "mac_address"}} ```
+                """
+            
+            mac_mapping, mac_response = Tools.run(mac_prompt)
+
+            st.markdown(f"### MAC Address present:{mac_response}")
+            st.markdown(f"### MAC Address Lookup:\n```json\n{mac_mapping}\n```")
+
             conversational_prompt = f"""
             Here are the query results based on the user's question:
 
-            {result_md}
+            {result_preview}
 
             You are an expert assistant specialized in analyzing packet captures (PCAPs) for troubleshooting and technical analysis. Use the data in the provided packet_capture_info to answer user questions accurately. When a specific application layer protocol is referenced, inspect the packet_capture_info according to these hints. Format your responses in markdown with line breaks, bullet points, and appropriate emojis to enhance readability
             **Protocol Hints:**
@@ -307,19 +381,15 @@ def tag_query_interface():
             - 🌐 **RSTP**: No port (Rapid Spanning Tree Protocol, L2 protocol)
             - 📞 **RTCP**: Dynamic ports (Real-time Transport Control Protocol)
     
-            **Additional Info:**
-            - Include context about traffic patterns (e.g., latency, packet loss).
-            - Use protocol hints when analyzing traffic to provide clear explanations of findings.
-            - Highlight significant events or anomalies in the packet capture based on the protocols.
-            - Identify source and destination IP addresses
-            - Identify source and destination MAC addresses
-            - Perform MAC OUI lookup and provide the manufacturer of the NIC 
-            - Look for dropped packets; loss; jitter; congestion; errors; or faults and surface these issues to the user
+            **Main Info:**
+            - Perform MAC OUI lookup and provide the manufacturer of the NIC, using this info from MAC lookup:{mac_mapping} 
+                and this {mac_response} from the model regarding the MAC address present in packet_capture_info
     
             Your goal is to provide a clear, concise, and accurate analysis of the packet capture data, leveraging the protocol hints and packet details.
             """
             with st.spinner("Generating conversational response..."):
                 conversational_response = query_bedrock(conversational_prompt)
+
 
             st.markdown("### Conversational Response:")
             st.write(conversational_response)
@@ -328,8 +398,40 @@ def tag_query_interface():
             st.error(f"Error: {e}")
 
 
+def display_sample_pcaps():
+    """
+    Display a section for downloading sample PCAP files.
+    """
+    st.subheader("Sample PCAP Files")
+    sample_files = {
+        "BGP Example": "pcap/bgp.pcap",
+        "Single Packet Example": "pcap/capture.pcap",
+        "DHCP Example": "pcap/dhcp.pcap",
+        "EIGRP Example": "pcap/eigrp.pcap",
+        "Slammer Worm Example": "pcap/slammer.pcap",
+        "Teardrop Attack Example": "pcap/teardrop.pcap",
+        "VXLAN Example": "pcap/vxlan.pcapng",
+    }
+
+    for name, path in sample_files.items():
+        try:
+            with open(path, "rb") as file:
+                st.download_button(
+                    label=f"Download {name}",
+                    data=file,
+                    file_name=os.path.basename(path),
+                    mime="application/vnd.tcpdump.pcap",
+                )
+        except FileNotFoundError:
+            st.error(f"Sample file '{name}' not found. Please check the file path.")
+
+
+# Main Application Logic
 def main():
     st.title("Packet TAG: Table-Augmented Generation for PCAP Analysis")
+    st.markdown("---")
+    st.subheader("Step 1: Download Sample PCAP Files")
+    display_sample_pcaps()
     st.markdown("---")
     st.subheader("Step 2: Upload and Convert PCAP")
     upload_and_process_pcap()
