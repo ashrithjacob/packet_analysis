@@ -5,13 +5,10 @@ networks:
 
 services:
   app:
-    build: .
+    build: 
+      context: .  
+    image: 122610501872.dkr.ecr.us-west-2.amazonaws.com/pcap:latest
     ports:
       - "8501:8501"
-      #  - "8501:8501"
-  #  image: 122610501872.dkr.ecr.us-west-2.amazonaws.com/pcap:latest
-  #  platform: linux/amd64
-  #  ports:
-  #    - "8501:8501"
-  #  networks:
-  #    - app-network
+    networks:
+      - app-network

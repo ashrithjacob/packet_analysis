@@ -6,81 +6,20 @@ import re
 import boto3
 import anthropic
 import json
+import helper as hp
 from botocore.exceptions import ClientError
 from openai import OpenAI
 from mac_vendor_lookup import MacLookup
 from dotenv import load_dotenv
+from groq import Groq
 
-
-# Load environment variables
 load_dotenv()
 
+
+# client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+# Load environment variables
 # Configure Streamlit
 st.set_page_config(page_title="Packet TAG", page_icon="📄")
-
-# Load OpenAI API key
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-bedrock = boto3.client(
-    service_name="bedrock-runtime",
-    region_name="us-west-2",
-    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID_USER"),
-    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY_USER"),
-)
-#client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-
-def query_openai(prompt):
-    """
-    Query the OpenAI GPT model with a prompt using the updated client.
-    """
-    try:
-        chat_completion = client.chat.completions.create(
-            model="gpt-4o",  # Specify the model
-            temperature=0.0,  # Set the temperature to 0 for deterministic outputs
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return chat_completion.choices[0].message.content
-    except Exception as e:
-        raise RuntimeError(f"Error querying OpenAI API: {e}")
-
-
-def query_bedrock(prompt,model_id="meta.llama3-1-70b-instruct-v1:0"):
-    system_prompt = """You are a network engineer capable of understanding network traffic through info 
-                        provided by packets captured\n. You hae been given a csv file to analyze, 
-                        where each row represents a packet and the columns represent the packet's attributes."""
-    max_tokens = 8192
-    formatted_prompt = f"""
-        <|begin_of_text|>
-        <|start_header_id|>system<|end_header_id|>
-        {system_prompt}
-        <|start_header_id|>user<|end_header_id|>
-        {prompt}
-        <|eot_id|>
-        <|start_header_id|>assistant<|end_header_id|>
-        """
-            
-    native_request = {
-        "prompt": formatted_prompt,
-        "max_gen_len": max_tokens,
-        "temperature": 0.0,
-        }
-    request = json.dumps(native_request)
-
-    try:
-        # Invoke the model with the request.
-        response = bedrock.invoke_model(
-        modelId=model_id,
-        body=request,
-        contentType="application/json"
-        )
-
-        # Decode the response body.
-        model_response = json.loads(response["body"].read())
-        response_text = model_response["generation"]
-        return response_text
-
-    except (ClientError, Exception) as e:
-        st.error(f"ERROR: Can't invoke '{model_id}'. Reason: {e}")
-
 
 
 # Function to convert .pcap to CSV using a subset of fields
@@ -89,23 +28,44 @@ def pcap_to_csv_with_subset(pcap_path, csv_path):
         "frame.number",
         "frame.time",
         "frame.len",
+        "frame.ignored",
+        "frame.protocols",
+        "ip.version",
+        "ip.len",
         "ip.src",
         "ip.dst",
         "ip.proto",
         "tcp.srcport",
         "tcp.dstport",
+        "tcp.time_relative",
+        "tcp.time_delta",
+        "tcp.analysis.acks_frame",
+        "tcp.analysis.ack_rtt",
         "udp.srcport",
         "udp.dstport",
         "eth.src",
+        "eth.src.oui",
+        "eth.addr",
+        "eth.addr.oui",
+        "eth.src.lg",
+        "eth.lg",
+        "eth.src.ig",
+        "eth.ig",
         "eth.dst",
+        "eth.dst.oui",
+        "eth.addr",
+        "eth.addr.oui",
+        "eth.dst.lg",
+        "eth.dst.ig",
         "dns.qry.name",
         "dns.a",
+        "_ws.expert.message",
     ]
-    field_options = " ".join([f"-e {field}" for field in fields])
-    command = f'tshark -r "{pcap_path}" -T fields {field_options} -E header=y -E separator=, > "{csv_path}"'
-    result = subprocess.run(command, shell=True)
-    if result.returncode != 0:
-        raise Exception(f"Error converting PCAP to CSV: {result.stderr}")
+    pcap_to_df = hp.PcapToDf(pcap_path)
+    df = pcap_to_df.create_df()
+    curated_df = df[[col for col in df.columns if col in fields]]
+    curated_df.to_csv(csv_path, index=False)
+    return curated_df
 
 
 def load_csv_as_dataframe(csv_path):
@@ -129,13 +89,13 @@ def generate_query_prompt(schema, query):
     """
 
 
-
 def clean_query(query):
     if "```" in query:
         cleaned_text = re.sub(r"^```\w*\s*|\s*```$", "", query).strip()
     else:
         cleaned_text = query.strip()
     return cleaned_text.split("\n")[0]
+
 
 def upload_and_process_pcap():
     MAX_FILE_SIZE_MB = 1
@@ -156,11 +116,9 @@ def upload_and_process_pcap():
             f.write(uploaded_file.getvalue())
 
         try:
-            pcap_to_csv_with_subset(pcap_path, csv_path)
+            full_df = pcap_to_csv_with_subset(pcap_path, csv_path)
             st.success("PCAP file successfully processed and converted to CSV.")
-            df = load_csv_as_dataframe(csv_path)
-            st.session_state["pcap_dataframe"] = df
-
+            st.session_state["pcap_dataframe"] = full_df
         except Exception as e:
             st.error(f"Error processing PCAP: {e}")
         finally:
@@ -169,72 +127,58 @@ def upload_and_process_pcap():
             if os.path.exists(csv_path):
                 os.remove(csv_path)
 
+
 class Tools:
-    def mac_vendor_prompt(prompt, model_id="meta.llama3-1-70b-instruct-v1:0"):
+    def agent_prompt(prompt):
         """
-        Get the vendor information for a given MAC address.
+        Prompt the agent with a question and return the response.
         """
-        system_prompt = """You are a network engineer capable of understanding network traffic through info 
-                        provided by packets captured\n. You hae been given a csv file to analyze, 
-                        where each row represents a packet and the columns represent the packet's attributes."""
-        max_tokens = 8192
-        formatted_prompt = f"""
-        <|begin_of_text|>
-        <|start_header_id|>system<|end_header_id|>
-        {system_prompt}
-        <|start_header_id|>user<|end_header_id|>
-        {prompt}
-        <|eot_id|>
-        <|start_header_id|>assistant<|end_header_id|>
-        """
-            
-        native_request = {
-        "prompt": formatted_prompt,
-        "max_gen_len": max_tokens,
-        "temperature": 0.0,
-        }
-        request = json.dumps(native_request)
+        response = hp.query_groq(prompt)
+        return response
 
-        try:
-            # Invoke the model with the request.
-            response = bedrock.invoke_model(
-            modelId=model_id,
-            body=request,
-            contentType="application/json"
-            )
-
-            # Decode the response body.
-            model_response = json.loads(response["body"].read())
-            response_text = model_response["generation"]
-            return response_text
-
-        except (ClientError, Exception) as e:
-            st.error(f"ERROR: Can't invoke '{model_id}'. Reason: {e}")
-        
     def filter_json(str_data):
-        code_blocks = re.findall(r'```(?:.*?\n)?(.*?)```', str_data, re.DOTALL)
-        print("Code Blocks:", code_blocks[0])
-        return json.loads(code_blocks[0])
-    
+        if "```" in str_data:
+            code_blocks = re.findall(r"```(?:.*?\n)?(.*?)```", str_data, re.DOTALL)
+            code_blocks = code_blocks[0]
+        else:
+            code_blocks = re.findall(r"{(.*?)}", str_data, re.DOTALL)
+            code_blocks = "{" + code_blocks[0] + "}"
+        print("STR", str_data)
+        print("Code Blocks1:", code_blocks)
+        return json.loads(code_blocks)
+
     def mac_vendor_lookup(json_data):
         """
         Lookup the vendor information for a given MAC address.
         """
         dict_lookup = {}
-        for key,val in json_data.items():
+        for key, val in json_data.items():
             vendor = MacLookup().lookup(val)
-            dict_lookup[key] = vendor
+            dict_lookup[val] = vendor
         return dict_lookup
 
-    def run(prompt):
-        response = Tools.mac_vendor_prompt(prompt)
-        print("Response:", response)
-        json_data = Tools.filter_json(response)
-        print("JSON Data:", json_data)
-        lookup = Tools.mac_vendor_lookup(json_data)
-        print("Lookup:", lookup)
-        return str(lookup), str(response)
+    def run_mac(result_preview):
+        try:
+            prompt = f"""
+                    From these query results:{result_preview}
+                    identify the MAC address of the source and destination IP addresses and return all mac addresses as json
+                    IMPORTANT: respond in the format ``` {{"column_name_1": "mac_address", "column_name_2": "mac_address"}} ```
+                    """
+            response = Tools.agent_prompt(prompt)
+            json_data = Tools.filter_json(response)
+            lookup = Tools.mac_vendor_lookup(json_data)
+            return str(lookup), str(response)
+        except Exception as e:
+            return str(e), str(e)
 
+    def run_network_matching(result_preview):
+        prompt = f"""
+                From these query results:{result_preview}
+                and these network information hints:{hp.network_information_prompt}, identify the protocols used with source and destination IP addresses.
+                DO NOT include specific packet details or repeat the network information hints
+                """
+        response = Tools.agent_prompt(prompt)
+        return response
 
 
 def tag_query_interface():
@@ -245,7 +189,8 @@ def tag_query_interface():
         st.error("Please upload and process a PCAP file first.")
         return
 
-    df = st.session_state["pcap_dataframe"]
+    df_full = st.session_state["pcap_dataframe"].dropna(axis=1, how="all")
+    # df.to_csv("packet_capture_info.csv", index=False)
     user_query = st.text_input("Ask a question about the PCAP data:")
 
     if st.button("Send Query"):
@@ -254,145 +199,81 @@ def tag_query_interface():
             return
 
         # Generate schema and prompt for query generation
-        schema = "\n".join(f"- {col}" for col in df.columns)
-        prompt = generate_query_prompt(schema, user_query)
+        schema = "\n".join(f"- {col}" for col in df_full.columns)
+        # prompt = generate_query_prompt(schema, user_query)
 
         try:
             # Query OpenAI to generate DataFrame query
             with st.spinner("Generating DataFrame query..."):
                 query_code = 'df.describe(include="all")'
-            st.markdown(f"### Generated Query:\n```python\n{query_code}\n```")
 
             # Execute the query on the DataFrame
-            result = eval(query_code, {"df": df})
-            st.markdown("### Query Results:")
-            st.dataframe(result)
+            result = eval(query_code, {"df": df_full})
+            #st.markdown("### Query Results:")
+            #st.dataframe(result)
 
             # Convert results to markdown for LLM
+            # result_preview = str(result)
             result_preview = result.to_markdown(index=False)
-            mac_prompt = f"""
-                From these query results:{result_preview}
-                identify the MAC address of the source and destination IP addresses and return all mac addresses as json
-                repond in the format ``` {{"column_name_1": "mac_address", "column_name_2": "mac_address"}} ```
-                """
+            #full_df_md = df_full.to_markdown(index=False)
+            full_df_md = str(df_full)
+            print("colmns in df_full", len(df_full.columns))
+            print("here1")
+
+            # MAC ID agent
+            mac_mapping, mac_response = Tools.run_mac(result_preview)
+            print("MAC resp", mac_response)
+            print("MAC mapping", mac_mapping)
+            # Traffic details
+            result_traffic = Tools.run_network_matching(result_preview)
+            st.markdown(f"### Traffic Details:{result_traffic}")
+
+            conversational_prompt_with_hints = f"""
             
-            mac_mapping, mac_response = Tools.run(mac_prompt)
-
-            st.markdown(f"### MAC Address present:{mac_response}")
-            st.markdown(f"### MAC Address Lookup:\n```json\n{mac_mapping}\n```")
-
-            conversational_prompt = f"""
-            Here are the query results based on the user's question:
-
-            {result_preview}
+            This is the user's query: {user_query}
+            Here are the query results based on the user's question:{result_preview}
 
             You are an expert assistant specialized in analyzing packet captures (PCAPs) for troubleshooting and technical analysis. Use the data in the provided packet_capture_info to answer user questions accurately. When a specific application layer protocol is referenced, inspect the packet_capture_info according to these hints. Format your responses in markdown with line breaks, bullet points, and appropriate emojis to enhance readability
-            **Protocol Hints:**
-            - 🌐 **HTTP**: `tcp.port == 80`
-            - 🔐 **HTTPS**: `tcp.port == 443`
-            - 🛠 **SNMP**: `udp.port == 161` or `udp.port == 162`
-            - ⏲ **NTP**: `udp.port == 123`
-            - 📁 **FTP**: `tcp.port == 21`
-            - 🔒 **SSH**: `tcp.port == 22`
-            - 🔄 **BGP**: `tcp.port == 179`
-            - 🌐 **OSPF**: IP protocol 89 (works directly on IP, no TCP/UDP)
-            - 🔍 **DNS**: `udp.port == 53` (or `tcp.port == 53` for larger queries/zone transfers)
-            - 💻 **DHCP**: `udp.port == 67` (server), `udp.port == 68` (client)
-            - 📧 **SMTP**: `tcp.port == 25` (email sending)
-            - 📬 **POP3**: `tcp.port == 110` (email retrieval)
-            - 📥 **IMAP**: `tcp.port == 143` (advanced email retrieval)
-            - 🔒 **LDAPS**: `tcp.port == 636` (secure LDAP)
-            - 📞 **SIP**: `tcp.port == 5060` or `udp.port == 5060` (for multimedia sessions)
-            - 🎥 **RTP**: No fixed port, commonly used with SIP for multimedia streams.
-            - 🖥 **Telnet**: `tcp.port == 23`
-            - 📂 **TFTP**: `udp.port == 69`
-            - 💾 **SMB**: `tcp.port == 445` (Server Message Block)
-            - 🌍 **RDP**: `tcp.port == 3389` (Remote Desktop Protocol)
-            - 📡 **SNTP**: `udp.port == 123` (Simple Network Time Protocol)
-            - 🔄 **RIP**: `udp.port == 520` (Routing Information Protocol)
-            - 🌉 **MPLS**: IP protocol 137 (Multi-Protocol Label Switching)
-            - 🔗 **EIGRP**: IP protocol 88 (Enhanced Interior Gateway Routing Protocol)
-            - 🖧 **L2TP**: `udp.port == 1701` (Layer 2 Tunneling Protocol)
-            - 💼 **PPTP**: `tcp.port == 1723` (Point-to-Point Tunneling Protocol)
-            - 🔌 **Telnet**: `tcp.port == 23` (Unencrypted remote access)
-            - 🛡 **Kerberos**: `tcp.port == 88` (Authentication protocol)
-            - 🖥 **VNC**: `tcp.port == 5900` (Virtual Network Computing)
-            - 🌐 **LDAP**: `tcp.port == 389` (Lightweight Directory Access Protocol)
-            - 📡 **NNTP**: `tcp.port == 119` (Network News Transfer Protocol)
-            - 📠 **RSYNC**: `tcp.port == 873` (Remote file sync)
-            - 📡 **ICMP**: IP protocol 1 (Internet Control Message Protocol, no port)
-            - 🌐 **GRE**: IP protocol 47 (Generic Routing Encapsulation, no port)
-            - 📶 **IKE**: `udp.port == 500` (Internet Key Exchange for VPNs)
-            - 🔐 **ISAKMP**: `udp.port == 4500` (for VPN traversal)
-            - 🛠 **Syslog**: `udp.port == 514`
-            - 🖨 **IPP**: `tcp.port == 631` (Internet Printing Protocol)
-            - 📡 **RADIUS**: `udp.port == 1812` (Authentication), `udp.port == 1813` (Accounting)
-            - 💬 **XMPP**: `tcp.port == 5222` (Extensible Messaging and Presence Protocol)
-            - 🖧 **Bittorrent**: `tcp.port == 6881-6889` (File-sharing protocol)
-            - 🔑 **OpenVPN**: `udp.port == 1194`
-            - 🖧 **NFS**: `tcp.port == 2049` (Network File System)
-            - 🔗 **Quic**: `udp.port == 443` (UDP-based transport protocol)
-            - 🌉 **STUN**: `udp.port == 3478` (Session Traversal Utilities for NAT)
-            - 🛡 **ESP**: IP protocol 50 (Encapsulating Security Payload for VPNs)
-            - 🛠 **LDP**: `tcp.port == 646` (Label Distribution Protocol for MPLS)
-            - 🌐 **HTTP/2**: `tcp.port == 8080` (Alternate HTTP port)
-            - 📁 **SCP**: `tcp.port == 22` (Secure file transfer over SSH)
-            - 🔗 **GTP-C**: `udp.port == 2123` (GPRS Tunneling Protocol Control)
-            - 📶 **GTP-U**: `udp.port == 2152` (GPRS Tunneling Protocol User)
-            - 🔄 **BGP**: `tcp.port == 179` (Border Gateway Protocol)
-            - 🌐 **OSPF**: IP protocol 89 (Open Shortest Path First)
-            - 🔄 **RIP**: `udp.port == 520` (Routing Information Protocol)
-            - 🔄 **EIGRP**: IP protocol 88 (Enhanced Interior Gateway Routing Protocol)
-            - 🌉 **LDP**: `tcp.port == 646` (Label Distribution Protocol)
-            - 🛰 **IS-IS**: ISO protocol 134 (Intermediate System to Intermediate System, works directly on IP)
-            - 🔄 **IGMP**: IP protocol 2 (Internet Group Management Protocol, for multicast)
-            - 🔄 **PIM**: IP protocol 103 (Protocol Independent Multicast)
-            - 📡 **RSVP**: IP protocol 46 (Resource Reservation Protocol)
-            - 🔄 **Babel**: `udp.port == 6696` (Babel routing protocol)
-            - 🔄 **DVMRP**: IP protocol 2 (Distance Vector Multicast Routing Protocol)
-            - 🛠 **VRRP**: `ip.protocol == 112` (Virtual Router Redundancy Protocol)
-            - 📡 **HSRP**: `udp.port == 1985` (Hot Standby Router Protocol)
-            - 🔄 **LISP**: `udp.port == 4341` (Locator/ID Separation Protocol)
-            - 🛰 **BFD**: `udp.port == 3784` (Bidirectional Forwarding Detection)
-            - 🌍 **HTTP/3**: `udp.port == 443` (Modern web traffic)
-            - 🛡 **IPSec**: IP protocol 50 (ESP), IP protocol 51 (AH)
-            - 📡 **L2TPv3**: `udp.port == 1701` (Layer 2 Tunneling Protocol)
-            - 🛰 **MPLS**: IP protocol 137 (Multi-Protocol Label Switching)
-            - 🔑 **IKEv2**: `udp.port == 500`, `udp.port == 4500` (Internet Key Exchange Version 2 for VPNs)
-            - 🛠 **NetFlow**: `udp.port == 2055` (Flow monitoring)
-            - 🌐 **CARP**: `ip.protocol == 112` (Common Address Redundancy Protocol)
-            - 🌐 **SCTP**: `tcp.port == 9899` (Stream Control Transmission Protocol)
-            - 🖥 **VNC**: `tcp.port == 5900-5901` (Virtual Network Computing)
-            - 🌐 **WebSocket**: `tcp.port == 80` (ws), `tcp.port == 443` (wss)
-            - 🔗 **NTPv4**: `udp.port == 123` (Network Time Protocol version 4)
-            - 📞 **MGCP**: `udp.port == 2427` (Media Gateway Control Protocol)
-            - 🔐 **FTPS**: `tcp.port == 990` (File Transfer Protocol Secure)
-            - 📡 **SNMPv3**: `udp.port == 162` (Simple Network Management Protocol version 3)
-            - 🔄 **VXLAN**: `udp.port == 4789` (Virtual Extensible LAN)
-            - 📞 **H.323**: `tcp.port == 1720` (Multimedia communications protocol)
-            - 🔄 **Zebra**: `tcp.port == 2601` (Zebra routing daemon control)
-            - 🔄 **LACP**: `udp.port == 646` (Link Aggregation Control Protocol)
-            - 📡 **SFlow**: `udp.port == 6343` (SFlow traffic monitoring)
-            - 🔒 **OCSP**: `tcp.port == 80` (Online Certificate Status Protocol)
-            - 🌐 **RTSP**: `tcp.port == 554` (Real-Time Streaming Protocol)
-            - 🔄 **RIPv2**: `udp.port == 521` (Routing Information Protocol version 2)
-            - 🌐 **GRE**: IP protocol 47 (Generic Routing Encapsulation)
-            - 🌐 **L2F**: `tcp.port == 1701` (Layer 2 Forwarding Protocol)
-            - 🌐 **RSTP**: No port (Rapid Spanning Tree Protocol, L2 protocol)
-            - 📞 **RTCP**: Dynamic ports (Real-time Transport Control Protocol)
-    
-            **Main Info:**
-            - Perform MAC OUI lookup and provide the manufacturer of the NIC, using this info from MAC lookup:{mac_mapping} 
+            **Network Information Hints:**
+            {hp.network_information_prompt}
+            use this to identify the traffic details including specific protocols used. Do not include specific packet details, only high-level traffic information.
+
+            **Main Info to be provided:**
+            - General Overview of the packet capture data
+            - Key observations from the packet capture data
+            - Traffic details including specific protocols use this info and be detailed: {result_traffic}
+            - Notable events: anomalies, potential issues, and performance metrics
+            - Perform MAC OUI lookup and provide the manufacturer of the NIC, using this info from MAC lookup:{mac_mapping}
                 and this {mac_response} from the model regarding the MAC address present in packet_capture_info
     
             Your goal is to provide a clear, concise, and accurate analysis of the packet capture data, leveraging the protocol hints and packet details.
             """
-            with st.spinner("Generating conversational response..."):
-                conversational_response = query_bedrock(conversational_prompt)
 
+            conversational_prompt_without_hints = f"""
+            This is the user's query: {user_query}
+            Here are the query results based on the user's question:{full_df_md}
+
+            You are an expert assistant specialized in analyzing packet captures (PCAPs) for troubleshooting and technical analysis. Use the data in the provided packet_capture_info to answer user questions accurately. When a specific application layer protocol is referenced, inspect the packet_capture_info according to these hints. Format your responses in markdown with line breaks, bullet points, and appropriate emojis to enhance readability
+            **Network Information Hints:**
+            use this to identify the traffic details including specific protocols used. Do not include specific packet details, only high-level traffic information.
+
+            **Main Info to be provided:**
+            - General Overview of the packet capture data
+            - Key observations from the packet capture data
+            - Notable events: anomalies, potential issues, and performance metrics including latency and RTT
+            - Perform MAC OUI lookup and provide the manufacturer of the NIC, using this info from MAC lookup:{mac_mapping}
+            and this {mac_response} from the model regarding the MAC address present in packet_capture_info
+    
+            Your goal is to provide a clear, concise, and accurate analysis of the packet capture data, leveraging the protocol hints and packet details.
+            """
+
+            with st.spinner("Generating conversational response..."):
+                conversational_response = hp.query_bedrock(
+                    conversational_prompt_without_hints
+                )
 
             st.markdown("### Conversational Response:")
-            st.write(conversational_response)
+            st.markdown(conversational_response)
 
         except Exception as e:
             st.error(f"Error: {e}")
@@ -430,13 +311,10 @@ def display_sample_pcaps():
 def main():
     st.title("Packet TAG: Table-Augmented Generation for PCAP Analysis")
     st.markdown("---")
-    st.subheader("Step 1: Download Sample PCAP Files")
-    display_sample_pcaps()
-    st.markdown("---")
-    st.subheader("Step 2: Upload and Convert PCAP")
+    st.subheader("Step 1: Upload and Convert PCAP")
     upload_and_process_pcap()
     st.markdown("---")
-    st.subheader("Step 3: Query the Table with LLM Assistance")
+    st.subheader("Step 2: Query the Table with LLM Assistance")
     tag_query_interface()
 
 

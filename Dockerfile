@@ -23,8 +23,14 @@ RUN echo "==> Install pip packages..." \
     && pip install --break-system-packages -U --quiet anthropic==0.40.0 \
     && pip install --break-system-packages -U --quiet langchain-anthropic==0.3.0 \
     && pip install --break-system-packages -U --quiet langchain-aws==0.2.7 \
-    && pip install --break-system-packages -U --quiet python-dotenv==1.0.1 \
-    && pip install --break-system-packages -U --quiet tabulate==0.9.0
+    && pip install --break-system-packages -U --quiet python-dotenv==1.0.1
+
+RUN echo "==> Install more pip packages..." \
+    && pip install --break-system-packages -U --quiet tabulate==0.9.0 \
+    && pip install --break-system-packages -U --quiet groq==0.13.0\
+    && pip install --break-system-packages -U --quiet openai==1.57.2\
+    && pip install --break-system-packages -U --quiet mac-vendor-lookup==0.1.12
+
 
 # Install tshark
 RUN apt-get update && apt-get install -y tshark
@@ -39,4 +45,4 @@ COPY .env .env
 
 EXPOSE 8501
 
-ENTRYPOINT ["streamlit", "run", "src/packet_analysis.py", "--server.port=8501", "--server.address=0.0.0.0"]
+ENTRYPOINT ["streamlit", "run", "src/packet_tag.py", "--server.port=8501", "--server.address=0.0.0.0"]
