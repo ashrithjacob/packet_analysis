@@ -19,7 +19,7 @@ load_dotenv()
 # client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 # Load environment variables
 # Configure Streamlit
-st.set_page_config(page_title="Packet TAG", page_icon="📄")
+st.set_page_config(page_title="Nanites AI PCAP Copilot", page_icon="📄")
 
 
 # Function to convert .pcap to CSV using a subset of fields
@@ -309,12 +309,14 @@ def display_sample_pcaps():
 
 # Main Application Logic
 def main():
-    st.title("Packet TAG: Table-Augmented Generation for PCAP Analysis")
+    st.logo("images/black.png", size="large")
+    st.title("Nanites AI PCAP Copilot")
     st.markdown("---")
+    st.subheader("""Welcome to Nanites AI PCAP Copilot! 🚀. Simply upload a pcap file and ask a question about the data""")
     st.subheader("Step 1: Upload and Convert PCAP")
     upload_and_process_pcap()
     st.markdown("---")
-    st.subheader("Step 2: Query the Table with LLM Assistance")
+    st.subheader("Step 2: Query the file with AI Assistance")
     tag_query_interface()
 
 
