@@ -20,7 +20,7 @@ load_dotenv()
 # Load environment variables
 # Configure Streamlit
 st.set_page_config(page_title="Nanites AI PCAP Copilot", page_icon="📄")
-
+dataframe_json_multifile = {}
 
 # Function to convert .pcap to CSV using a subset of fields
 def pcap_to_csv_with_subset(pcap_path, csv_path):
@@ -88,7 +88,6 @@ def generate_query_prompt(schema, query):
     Provide the query code only. Do not include explanations.
     """
 
-
 def clean_query(query):
     if "```" in query:
         cleaned_text = re.sub(r"^```\w*\s*|\s*```$", "", query).strip()
@@ -96,11 +95,17 @@ def clean_query(query):
         cleaned_text = query.strip()
     return cleaned_text.split("\n")[0]
 
+def process_multifile_pcap():
+    uploaded_files = st.file_uploader("Upload a PCAP file", type=["pcap", "pcapng"], accept_multiple_files=True)
+    for uploaded_file in uploaded_files:
+        full_df = upload_and_process_pcap(uploaded_file)
+        if full_df is not None:
+            file_name=uploaded_file.name.split(".")[0]
+            dataframe_json_multifile[file_name] = full_df.dropna(axis=1, how="all")
+        st.session_state["pcap_dataframe_status"] = True
 
-def upload_and_process_pcap():
+def upload_and_process_pcap(uploaded_file):
     MAX_FILE_SIZE_MB = 1
-    uploaded_file = st.file_uploader("Upload a PCAP file", type=["pcap", "pcapng"])
-
     if uploaded_file:
         if uploaded_file.size > MAX_FILE_SIZE_MB * 1024 * 1024:
             st.error(f"The file exceeds the maximum size of {MAX_FILE_SIZE_MB} MB.")
@@ -118,7 +123,6 @@ def upload_and_process_pcap():
         try:
             full_df = pcap_to_csv_with_subset(pcap_path, csv_path)
             st.success("PCAP file successfully uploaded!")
-            st.session_state["pcap_dataframe"] = full_df
         except Exception as e:
             st.error(f"Error processing PCAP: {e}")
         finally:
@@ -126,6 +130,7 @@ def upload_and_process_pcap():
                 os.remove(pcap_path)
             if os.path.exists(csv_path):
                 os.remove(csv_path)
+            return full_df
 
 
 class Tools:
@@ -185,12 +190,14 @@ def tag_query_interface():
     """
     Provide an interface to query the processed PCAP table using OpenAI LLM and generate conversational responses.
     """
-    if "pcap_dataframe" not in st.session_state:
+    if "pcap_dataframe_status" not in st.session_state:
         st.error("Please upload and process a PCAP file first.")
         return
+    files_description = ""
+    for key, value in dataframe_json_multifile.items():
+        df_in_markdown = value.to_markdown(index=False)
+        files_description += f"{key} : {df_in_markdown}\n\n"
 
-    df_full = st.session_state["pcap_dataframe"].dropna(axis=1, how="all")
-    # df.to_csv("packet_capture_info.csv", index=False)
     user_query = st.text_input("Ask a question about the PCAP data:")
 
     if st.button("Send Query"):
@@ -199,77 +206,61 @@ def tag_query_interface():
             return
 
         # Generate schema and prompt for query generation
-        schema = "\n".join(f"- {col}" for col in df_full.columns)
+        #schema = "\n".join(f"- {col}" for col in df_full.columns)
         # prompt = generate_query_prompt(schema, user_query)
 
         try:
             # Query OpenAI to generate DataFrame query
-            with st.spinner("Generating DataFrame query..."):
-                query_code = 'df.describe(include="all")'
+            #with st.spinner("Generating DataFrame query..."):
+            #    query_code = 'df.describe(include="all")'
 
             # Execute the query on the DataFrame
-            result = eval(query_code, {"df": df_full})
+            #result = eval(query_code, {"df": df_full})
             # st.markdown("### Query Results:")
             # st.dataframe(result)
 
             # Convert results to markdown for LLM
             # result_preview = str(result)
-            result_preview = result.to_markdown(index=False)
+            #result_preview = result.to_markdown(index=False)
             # full_df_md = df_full.to_markdown(index=False)
-            full_df_md = str(df_full)
-            print("colmns in df_full", len(df_full.columns))
-            print("here1")
+            #full_df_md = str(df_full)
+            #print("colmns in df_full", len(df_full.columns))
+            #print("here1")
 
             # MAC ID agent
-            mac_mapping, mac_response = Tools.run_mac(result_preview)
-            print("MAC resp", mac_response)
-            print("MAC mapping", mac_mapping)
+            #mac_mapping, mac_response = Tools.run_mac(result_preview)
+            #print("MAC resp", mac_response)
+            #print("MAC mapping", mac_mapping)
             # Traffic details
-            result_traffic = Tools.run_network_matching(result_preview)
-            st.markdown(f"### Traffic Details:{result_traffic}")
+            #result_traffic = Tools.run_network_matching(result_preview)
+            #st.markdown(f"### Traffic Details:{result_traffic}")
 
             conversational_prompt_with_hints = f"""
             
             This is the user's query: {user_query}
-            Here are the query results based on the user's question:{result_preview}
+            Here are the pcap files in a dataframe format, each file name is provided with it's contents:{files_description}
 
             You are an expert assistant specialized in analyzing packet captures (PCAPs) for troubleshooting and technical analysis. Use the data in the provided packet_capture_info to answer user questions accurately. When a specific application layer protocol is referenced, inspect the packet_capture_info according to these hints. Format your responses in markdown with line breaks, bullet points, and appropriate emojis to enhance readability
             **Network Information Hints:**
             {hp.network_information_prompt}
-            use this to identify the traffic details including specific protocols used. Do not include specific packet details, only high-level traffic information.
-
-            **Main Info to be provided:**
-            - General Overview of the packet capture data
-            - Key observations from the packet capture data
-            - Traffic details including specific protocols use this info and be detailed: {result_traffic}
-            - Notable events: anomalies, potential issues, and performance metrics
-            - Perform MAC OUI lookup and provide the manufacturer of the NIC, using this info from MAC lookup:{mac_mapping}
-                and this {mac_response} from the model regarding the MAC address present in packet_capture_info
-    
-            Your goal is to provide a clear, concise, and accurate analysis of the packet capture data, leveraging the protocol hints and packet details.
-            """
-
-            conversational_prompt_without_hints = f"""
-            This is the user's query: {user_query}
-            Here are the query results based on the user's question:{full_df_md}
-
-            You are an expert assistant specialized in analyzing packet captures (PCAPs) for troubleshooting and technical analysis. Use the data in the provided packet_capture_info to answer user questions accurately. When a specific application layer protocol is referenced, inspect the packet_capture_info according to these hints. Format your responses in markdown with line breaks, bullet points, and appropriate emojis to enhance readability
-            **Network Information Hints:**
-            use this to identify the traffic details including specific protocols used. Do not include specific packet details, only high-level traffic information.
-
-            **Main Info to be provided:**
-            - General Overview of the packet capture data
-            - Key observations from the packet capture data
-            - Notable events: anomalies, potential issues, and performance metrics including latency and RTT
-            - Perform MAC OUI lookup and provide the manufacturer of the NIC, using this info from MAC lookup:{mac_mapping}
-            and this {mac_response} from the model regarding the MAC address present in packet_capture_info
-    
-            Your goal is to provide a clear, concise, and accurate analysis of the packet capture data, leveraging the protocol hints and packet details.
+            
+            ## Use this to identify the following correlation between the pcap files:
+            Focus on Layer 2 Frames: Primarily interested in layer 2 frames for WiFi network analysis, not concerned with payload or layer 3/4 information.
+            Different Network Perspectives: Needs to correlate captures from various parts of the network, such as interactions between APs(access points) and clients.
+            Specific Use Cases:
+            - Multi-Shared Keys with RADIUS Server: Captures involve setups with multi-shared keys and interactions with a RADIUS server.
+            - AP Perspective: Requires captures from the AP’s viewpoint to monitor client interactions.
+            - Data Handling:
+            - Truncated Packets: Interested in only the headers (radio tab), ensuring minimal data beyond layer 2. **ONLY DO THIS IF IT IS EASY, ELSE PLEASE THIS OUT
+            - Efficient Correlation: Ability to correlate different files from multiple perspectives to analyze comprehensive network behavior.
+            - Technical Requirements:
+            - Session Management: Captures include quick interactions, such as AP responses within seconds, leading to session timeouts.
+            - Over-the-Air Communications: Focus on wireless interactions rather than wired.
             """
 
             with st.spinner("Generating conversational response..."):
                 conversational_response = hp.query_groq(
-                    conversational_prompt_without_hints
+                    conversational_prompt_with_hints
                 )
 
             st.markdown("### Conversational Response:")
@@ -323,7 +314,7 @@ def main():
         help=None,
     )
     st.subheader("Step 1: Upload and Convert PCAP")
-    upload_and_process_pcap()
+    process_multifile_pcap()
     st.markdown("---")
     st.subheader("Step 2: Query the file with AI Assistance")
     tag_query_interface()
