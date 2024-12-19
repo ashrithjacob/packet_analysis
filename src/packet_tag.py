@@ -117,7 +117,7 @@ def upload_and_process_pcap():
 
         try:
             full_df = pcap_to_csv_with_subset(pcap_path, csv_path)
-            st.success("PCAP file successfully processed and converted to CSV.")
+            st.success("PCAP file successfully uploaded!")
             st.session_state["pcap_dataframe"] = full_df
         except Exception as e:
             st.error(f"Error processing PCAP: {e}")
@@ -209,13 +209,13 @@ def tag_query_interface():
 
             # Execute the query on the DataFrame
             result = eval(query_code, {"df": df_full})
-            #st.markdown("### Query Results:")
-            #st.dataframe(result)
+            # st.markdown("### Query Results:")
+            # st.dataframe(result)
 
             # Convert results to markdown for LLM
             # result_preview = str(result)
             result_preview = result.to_markdown(index=False)
-            #full_df_md = df_full.to_markdown(index=False)
+            # full_df_md = df_full.to_markdown(index=False)
             full_df_md = str(df_full)
             print("colmns in df_full", len(df_full.columns))
             print("here1")
@@ -268,7 +268,7 @@ def tag_query_interface():
             """
 
             with st.spinner("Generating conversational response..."):
-                conversational_response = hp.query_bedrock(
+                conversational_response = hp.query_groq(
                     conversational_prompt_without_hints
                 )
 
@@ -309,10 +309,19 @@ def display_sample_pcaps():
 
 # Main Application Logic
 def main():
-    st.logo("images/black.png", size="large")
+    logo = "images/black.png"
+    # st.logo(logo, size="large")
+    st.image(logo, width=100)
     st.title("Nanites AI PCAP Copilot")
     st.markdown("---")
-    st.subheader("""Welcome to Nanites AI PCAP Copilot! 🚀. Simply upload a pcap file and ask a question about the data""")
+    st.subheader(
+        """Welcome to Nanites AI PCAP Copilot! 🚀 Simply upload one or multiple pcap file(s) and ask a question about the data."""
+    )
+    st.caption(
+        "Note: All information, including PCAPs, JSON files, and vector stores are neither stored nor retained. Data is deleted during or immediately after each session. Please adhere to your organization’s AI policies and governance protocols before uploading any sensitive materials.",
+        unsafe_allow_html=False,
+        help=None,
+    )
     st.subheader("Step 1: Upload and Convert PCAP")
     upload_and_process_pcap()
     st.markdown("---")
