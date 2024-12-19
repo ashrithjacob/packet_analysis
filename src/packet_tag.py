@@ -96,7 +96,7 @@ def clean_query(query):
     return cleaned_text.split("\n")[0]
 
 def process_multifile_pcap():
-    uploaded_files = st.file_uploader("Upload a PCAP file", type=["pcap", "pcapng"], accept_multiple_files=True)
+    uploaded_files = st.file_uploader("Upload a PCAP file(s)", type=["pcap", "pcapng"], accept_multiple_files=True)
     for uploaded_file in uploaded_files:
         full_df = upload_and_process_pcap(uploaded_file)
         if full_df is not None:
@@ -107,6 +107,7 @@ def process_multifile_pcap():
 def upload_and_process_pcap(uploaded_file):
     MAX_FILE_SIZE_MB = 1
     if uploaded_file:
+        st.write(f"Processing uploaded PCAP file...{uploaded_file.name}")
         if uploaded_file.size > MAX_FILE_SIZE_MB * 1024 * 1024:
             st.error(f"The file exceeds the maximum size of {MAX_FILE_SIZE_MB} MB.")
             return
@@ -191,7 +192,7 @@ def tag_query_interface():
     Provide an interface to query the processed PCAP table using OpenAI LLM and generate conversational responses.
     """
     if "pcap_dataframe_status" not in st.session_state:
-        st.error("Please upload and process a PCAP file first.")
+        st.error("Please upload and process PCAP file(s) first.")
         return
     files_description = ""
     for key, value in dataframe_json_multifile.items():
@@ -243,7 +244,7 @@ def tag_query_interface():
             You are an expert assistant specialized in analyzing packet captures (PCAPs) for troubleshooting and technical analysis. Use the data in the provided packet_capture_info to answer user questions accurately. When a specific application layer protocol is referenced, inspect the packet_capture_info according to these hints. Format your responses in markdown with line breaks, bullet points, and appropriate emojis to enhance readability
             **Network Information Hints:**
             {hp.network_information_prompt}
-            
+
             ## Use this to identify the following correlation between the pcap files:
             Focus on Layer 2 Frames: Primarily interested in layer 2 frames for WiFi network analysis, not concerned with payload or layer 3/4 information.
             Different Network Perspectives: Needs to correlate captures from various parts of the network, such as interactions between APs(access points) and clients.
@@ -300,20 +301,20 @@ def display_sample_pcaps():
 
 # Main Application Logic
 def main():
-    logo = "images/black.png"
+    logo = "images/Nanites.svg"
     # st.logo(logo, size="large")
-    st.image(logo, width=100)
+    st.image(logo, width=150)
     st.title("Nanites AI PCAP Copilot")
     st.markdown("---")
     st.subheader(
-        """Welcome to Nanites AI PCAP Copilot! 🚀 Simply upload one or multiple pcap file(s) and ask a question about the data."""
+        """Welcome to Nanites AI PCAP Copilot! 🚀 Simply upload one or multiple PCAP files and ask a question about the data."""
     )
     st.caption(
         "Note: All information, including PCAPs, JSON files, and vector stores are neither stored nor retained. Data is deleted during or immediately after each session. Please adhere to your organization’s AI policies and governance protocols before uploading any sensitive materials.",
         unsafe_allow_html=False,
         help=None,
     )
-    st.subheader("Step 1: Upload and Convert PCAP")
+    st.subheader("Step 1:  Upload and convert one or multiple PCAPs")
     process_multifile_pcap()
     st.markdown("---")
     st.subheader("Step 2: Query the file with AI Assistance")

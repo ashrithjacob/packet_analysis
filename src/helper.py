@@ -11,7 +11,9 @@ from botocore.exceptions import ClientError
 from openai import OpenAI
 from mac_vendor_lookup import MacLookup
 from dotenv import load_dotenv
+import time 
 from groq import Groq
+
 load_dotenv()
 
 client_groq = Groq(api_key=os.getenv("GROQ_API_KEY"))
@@ -136,7 +138,9 @@ class PcapToDf:
         return self.pcap_file.replace(".pcap", ".json")
 
     def pcap_to_json(self):
+        print("Converting pcap to json")
         command = f"tshark -nlr {self.pcap_file} -T json > {self.json_path}"
+        print("TEST")
         subprocess.run(command, shell=True)
 
     def extract_vals_from_dict(self, my_dict):
