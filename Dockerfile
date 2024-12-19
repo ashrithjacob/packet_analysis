@@ -40,6 +40,7 @@ RUN echo "==> Adding pyshark ..." \
 
 WORKDIR /packet_analysis
 COPY ./temp ./temp
+COPY ./images ./images
 COPY ./src ./src
 COPY .env .env
 
