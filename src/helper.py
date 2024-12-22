@@ -138,9 +138,7 @@ class PcapToDf:
         return self.pcap_file.replace(".pcap", ".json")
 
     def pcap_to_json(self):
-        print("Converting pcap to json")
         command = f"tshark -nlr {self.pcap_file} -T json > {self.json_path}"
-        print("TEST")
         subprocess.run(command, shell=True)
 
     def extract_vals_from_dict(self, my_dict):
@@ -225,6 +223,16 @@ def query_bedrock(prompt,model_id="meta.llama3-1-70b-instruct-v1:0"):
 
     except (ClientError, Exception) as e:
         st.error(f"ERROR: Can't invoke '{model_id}'. Reason: {e}")
+
+
+def get_detailed_prompt(file_info, title, body):
+    detailed_prompt = f"""
+        - 📄 **packet network data**:{file_info}
+        - 📚 **from the above Instructions**: 
+                Provide detailed insights based on the data with regards to {title} and expound further on {body}.
+        """
+    return detailed_prompt
+
 
 def query_groq(query, model_id="llama-3.3-70b-versatile"):
     try:

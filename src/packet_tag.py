@@ -12,15 +12,28 @@ from openai import OpenAI
 from mac_vendor_lookup import MacLookup
 from dotenv import load_dotenv
 from groq import Groq
+from pydantic import BaseModel
 
 load_dotenv()
 
+
+class Article(BaseModel):
+    title: str
+    body: str
 
 # client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 # Load environment variables
 # Configure Streamlit
 st.set_page_config(page_title="Nanites AI PCAP Copilot", page_icon="📄")
-dataframe_json_multifile = {}
+#st.session_state["conversational_response"] = st.session_state["return_info"] = None
+st.session_state["dataframe_json_multifile"] = {}
+#st.session_state["subheaders"] = subheaders ={}
+#st.session_state["messages"] = [
+#    {"role": "system", 
+#     "content": """You are a network engineer capable of understanding network traffic through information
+#                        provided by packets captured\n. You hae been given a csv file to analyze, 
+#                        where each row represents a packet and the columns represent the packet's attributes."""}
+#]
 
 # Function to convert .pcap to CSV using a subset of fields
 def pcap_to_csv_with_subset(pcap_path, csv_path):
@@ -97,12 +110,15 @@ def clean_query(query):
 
 def process_multifile_pcap():
     uploaded_files = st.file_uploader("Upload a PCAP file(s)", type=["pcap", "pcapng"], accept_multiple_files=True)
+    concerned_files = st.multiselect("Select the files you are concerned with for the question", [file.name for file in uploaded_files])
+    print("concerned_files", concerned_files)
     for uploaded_file in uploaded_files:
-        full_df = upload_and_process_pcap(uploaded_file)
-        if full_df is not None:
-            file_name=uploaded_file.name.split(".")[0]
-            dataframe_json_multifile[file_name] = full_df.dropna(axis=1, how="all")
-        st.session_state["pcap_dataframe_status"] = True
+        if uploaded_file.name in concerned_files:
+            full_df = upload_and_process_pcap(uploaded_file)
+            if full_df is not None:
+                file_name=uploaded_file.name.split(".")[0]
+                st.session_state["dataframe_json_multifile"][file_name] = full_df.dropna(axis=1, how="all")
+            st.session_state["pcap_dataframe_status"] = True
 
 def upload_and_process_pcap(uploaded_file):
     MAX_FILE_SIZE_MB = 1
@@ -187,63 +203,83 @@ class Tools:
         return response
 
 
-def tag_query_interface():
+def view_csv_file():
+    dataframe_list = list(st.session_state["dataframe_json_multifile"].values())
+    dataframe_list_keys = list(st.session_state["dataframe_json_multifile"].keys())
+    for i, df in enumerate(dataframe_list):
+        st.markdown(f"*{dataframe_list_keys[i]}.csv*")
+        st.dataframe(df)
+
+
+def tag_query_interface(user_query):
     """
     Provide an interface to query the processed PCAP table using OpenAI LLM and generate conversational responses.
     """
     if "pcap_dataframe_status" not in st.session_state:
         st.error("Please upload and process PCAP file(s) first.")
         return
-    files_description = ""
-    for key, value in dataframe_json_multifile.items():
-        df_in_markdown = value.to_markdown(index=False)
-        files_description += f"{key} : {df_in_markdown}\n\n"
+    dataframe_list = list(st.session_state["dataframe_json_multifile"].values())
 
-    user_query = st.text_input("Ask a question about the PCAP data:")
+    if len(dataframe_list) == 1:
+        df_full = dataframe_list[0]
+    else:
+        files_description = ""
+        for key, value in st.session_state["dataframe_json_multifile"].items():
+            df_in_markdown = value.to_markdown(index=False)
+            files_description += f"{key} : {df_in_markdown}\n\n"
 
-    if st.button("Send Query"):
-        if not user_query.strip():
-            st.warning("Please enter a question.")
-            return
+    #user_query = st.text_input("Ask a question about the PCAP data:")
+    #st.session_state["messages"].append({"role": "user", "content": user_query})
 
-        # Generate schema and prompt for query generation
-        #schema = "\n".join(f"- {col}" for col in df_full.columns)
-        # prompt = generate_query_prompt(schema, user_query)
+    if not user_query.strip():
+        st.warning("Please enter a question.")
+        return
 
-        try:
-            # Query OpenAI to generate DataFrame query
-            #with st.spinner("Generating DataFrame query..."):
-            #    query_code = 'df.describe(include="all")'
-
-            # Execute the query on the DataFrame
-            #result = eval(query_code, {"df": df_full})
-            # st.markdown("### Query Results:")
-            # st.dataframe(result)
-
-            # Convert results to markdown for LLM
-            # result_preview = str(result)
-            #result_preview = result.to_markdown(index=False)
-            # full_df_md = df_full.to_markdown(index=False)
-            #full_df_md = str(df_full)
-            #print("colmns in df_full", len(df_full.columns))
-            #print("here1")
-
+    try:
+        if len(list(st.session_state["dataframe_json_multifile"].values())) == 1:
+            query_code = 'df.describe(include="all")'
+            result = eval(query_code, {"df": df_full})
+            result_preview = result.to_markdown(index=False)
             # MAC ID agent
-            #mac_mapping, mac_response = Tools.run_mac(result_preview)
-            #print("MAC resp", mac_response)
-            #print("MAC mapping", mac_mapping)
+            mac_mapping, mac_response = Tools.run_mac(result_preview)
             # Traffic details
-            #result_traffic = Tools.run_network_matching(result_preview)
-            #st.markdown(f"### Traffic Details:{result_traffic}")
-
+            result_traffic = Tools.run_network_matching(result_preview)
+            st.markdown(f"### Traffic Details:{result_traffic}")
             conversational_prompt_with_hints = f"""
-            
+            This is the user's query: {user_query}
+            Here are the query results based on the user's question:{result_preview}
+
+            You are an expert assistant specialized in analyzing packet captures (PCAPs) for troubleshooting and technical analysis. Use the data in the provided packet_capture_info to answer user questions accurately. When a specific application layer protocol is referenced, inspect the packet_capture_info according to these hints. Format your responses in markdown with line breaks, bullet points, and appropriate emojis to enhance readability
+            **Network Information Hints:**
+            {hp.network_information_prompt}
+            use this to identify the traffic details including specific protocols used. Do not include specific packet details, only high-level traffic information.
+
+            **Provide deeep insight regarding the following points:**
+            - General Overview of the packet capture data
+            - Key observations from the packet capture data
+            - Traffic details including specific protocols use this info and be detailed: {result_traffic}
+            - Notable events: anomalies, potential issues, and performance metrics
+            - Perform MAC OUI lookup and provide the manufacturer of the NIC, using this info from MAC lookup:{mac_mapping}
+                and this {mac_response} from the model regarding the MAC address present in packet_capture_info
+    
+            Your goal is to provide a clear, concise, and accurate analysis of the packet capture data, leveraging the protocol hints and packet details.
+            """
+            with st.spinner("Generating conversational response..."):
+                conversational_response = hp.query_groq(conversational_prompt_with_hints)
+            return_info = result_preview
+        else:
+            conversational_prompt_multifile = f"""
             This is the user's query: {user_query}
             Here are the pcap files in a dataframe format, each file name is provided with it's contents:{files_description}
 
             You are an expert assistant specialized in analyzing packet captures (PCAPs) for troubleshooting and technical analysis. Use the data in the provided packet_capture_info to answer user questions accurately. When a specific application layer protocol is referenced, inspect the packet_capture_info according to these hints. Format your responses in markdown with line breaks, bullet points, and appropriate emojis to enhance readability
             **Network Information Hints:**
             {hp.network_information_prompt}
+            
+            ## Think step by step and provide a detailed response to the user's query.
+            - Identify the types of wlan frames (beacon, probe request/response, association request/response, etc.) to understand the WiFi communication flow.
+            - Examined the eapol frames to see if they indicate successful authentication or any errors.
+            - Checked for any patterns or anomalies in the UDP traffic, such as unusual port numbers, high volume of traffic to a specific IP, or communication with known malicious IPs.
 
             ## Use this to identify the following correlation between the pcap files:
             Focus on Layer 2 Frames: Primarily interested in layer 2 frames for WiFi network analysis, not concerned with payload or layer 3/4 information.
@@ -258,45 +294,17 @@ def tag_query_interface():
             - Session Management: Captures include quick interactions, such as AP responses within seconds, leading to session timeouts.
             - Over-the-Air Communications: Focus on wireless interactions rather than wired.
             """
-
             with st.spinner("Generating conversational response..."):
-                conversational_response = hp.query_groq(
-                    conversational_prompt_with_hints
-                )
+                conversational_response = hp.query_groq(conversational_prompt_multifile)
+            return_info = files_description
 
-            st.markdown("### Conversational Response:")
-            st.markdown(conversational_response)
+        st.session_state["dataframe_json_multifile"] = {}
+        user_query = None
+        return conversational_response, return_info
+    except Exception as e:
+        st.error(f"Error: {e}")
 
-        except Exception as e:
-            st.error(f"Error: {e}")
 
-
-def display_sample_pcaps():
-    """
-    Display a section for downloading sample PCAP files.
-    """
-    st.subheader("Sample PCAP Files")
-    sample_files = {
-        "BGP Example": "pcap/bgp.pcap",
-        "Single Packet Example": "pcap/capture.pcap",
-        "DHCP Example": "pcap/dhcp.pcap",
-        "EIGRP Example": "pcap/eigrp.pcap",
-        "Slammer Worm Example": "pcap/slammer.pcap",
-        "Teardrop Attack Example": "pcap/teardrop.pcap",
-        "VXLAN Example": "pcap/vxlan.pcapng",
-    }
-
-    for name, path in sample_files.items():
-        try:
-            with open(path, "rb") as file:
-                st.download_button(
-                    label=f"Download {name}",
-                    data=file,
-                    file_name=os.path.basename(path),
-                    mime="application/vnd.tcpdump.pcap",
-                )
-        except FileNotFoundError:
-            st.error(f"Sample file '{name}' not found. Please check the file path.")
 
 
 # Main Application Logic
@@ -317,8 +325,33 @@ def main():
     st.subheader("Step 1:  Upload and convert one or multiple PCAPs")
     process_multifile_pcap()
     st.markdown("---")
-    st.subheader("Step 2: Query the file with AI Assistance")
-    tag_query_interface()
+    st.subheader("Step 2: View uploaded CSV files")
+    view_csv_file()
+    st.markdown("---")
+    st.subheader("Step 3: Query the file with AI Assistance")
+
+    # Initialize chat history
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    # Display chat messages from history on app rerun
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    # React to user input
+    if prompt := st.chat_input("Ask a question about the PCAP data"):
+        # Display user message in chat message container
+        st.chat_message("user").markdown(prompt)
+        # Add user message to chat history
+        st.session_state.messages.append({"role": "user", "content": prompt})
+
+        response, meta = tag_query_interface(prompt)
+        # Display assistant response in chat message container
+        with st.chat_message("assistant"):
+            st.markdown(response)
+        # Add assistant response to chat history
+        st.session_state.messages.append({"role": "assistant", "content": response})
 
 
 if __name__ == "__main__":
