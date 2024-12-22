@@ -312,7 +312,7 @@ def main():
     logo = "images/Nanites.svg"
     # st.logo(logo, size="large")
     st.image(logo, width=150)
-    st.title("Nanites AI PCAP Copilot")
+    st.title("Nanites AI PCAP Copilot!!")
     st.markdown("---")
     st.subheader(
         """Welcome to Nanites AI PCAP Copilot! 🚀 Simply upload one or multiple PCAP files and ask a question about the data."""
