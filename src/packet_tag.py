@@ -22,18 +22,9 @@ class Article(BaseModel):
     body: str
 
 # client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-# Load environment variables
-# Configure Streamlit
 st.set_page_config(page_title="Nanites AI PCAP Copilot", page_icon="📄")
-#st.session_state["conversational_response"] = st.session_state["return_info"] = None
+st.session_state["models"]=("Llama-3.3-70b", "GPT-4o")
 st.session_state["dataframe_json_multifile"] = {}
-#st.session_state["subheaders"] = subheaders ={}
-#st.session_state["messages"] = [
-#    {"role": "system", 
-#     "content": """You are a network engineer capable of understanding network traffic through information
-#                        provided by packets captured\n. You hae been given a csv file to analyze, 
-#                        where each row represents a packet and the columns represent the packet's attributes."""}
-#]
 
 # Function to convert .pcap to CSV using a subset of fields
 def pcap_to_csv_with_subset(pcap_path, csv_path):
@@ -110,15 +101,12 @@ def clean_query(query):
 
 def process_multifile_pcap():
     uploaded_files = st.file_uploader("Upload a PCAP file(s)", type=["pcap", "pcapng"], accept_multiple_files=True)
-    concerned_files = st.multiselect("Select the files you are concerned with for the question", [file.name for file in uploaded_files])
-    print("concerned_files", concerned_files)
     for uploaded_file in uploaded_files:
-        if uploaded_file.name in concerned_files:
-            full_df = upload_and_process_pcap(uploaded_file)
-            if full_df is not None:
-                file_name=uploaded_file.name.split(".")[0]
-                st.session_state["dataframe_json_multifile"][file_name] = full_df.dropna(axis=1, how="all")
-            st.session_state["pcap_dataframe_status"] = True
+        full_df = upload_and_process_pcap(uploaded_file)
+        if full_df is not None:
+            file_name=uploaded_file.name.split(".")[0]
+            st.session_state["dataframe_json_multifile"][file_name] = full_df.dropna(axis=1, how="all")
+        st.session_state["pcap_dataframe_status"] = True
 
 def upload_and_process_pcap(uploaded_file):
     MAX_FILE_SIZE_MB = 1
@@ -211,7 +199,7 @@ def view_csv_file():
         st.dataframe(df)
 
 
-def tag_query_interface(user_query):
+def tag_query_interface(user_query, llm):
     """
     Provide an interface to query the processed PCAP table using OpenAI LLM and generate conversational responses.
     """
@@ -264,8 +252,11 @@ def tag_query_interface(user_query):
     
             Your goal is to provide a clear, concise, and accurate analysis of the packet capture data, leveraging the protocol hints and packet details.
             """
-            with st.spinner("Generating conversational response..."):
-                conversational_response = hp.query_groq(conversational_prompt_with_hints)
+            with st.spinner(f"Generating conversational response with {llm}..."):
+                if llm==st.session_state["models"][0]:
+                    conversational_response = hp.query_groq(conversational_prompt_with_hints)
+                elif llm==st.session_state["models"][1]:
+                    conversational_response = hp.query_openai(conversational_prompt_with_hints)
             return_info = result_preview
         else:
             conversational_prompt_multifile = f"""
@@ -293,9 +284,14 @@ def tag_query_interface(user_query):
             - Technical Requirements:
             - Session Management: Captures include quick interactions, such as AP responses within seconds, leading to session timeouts.
             - Over-the-Air Communications: Focus on wireless interactions rather than wired.
+
+            DO NOT GIVE ANY INTRODUCTION LIKE AN ESSAY, JUST ANSWER THE QEURY DIRECTLY BASED ON THE INFORMATION PROVIDED
             """
-            with st.spinner("Generating conversational response..."):
-                conversational_response = hp.query_groq(conversational_prompt_multifile)
+            with st.spinner(f"Generating conversational response with {llm}..."):
+                if llm==st.session_state["models"][0]:
+                    conversational_response = hp.query_groq(conversational_prompt_multifile)
+                elif llm==st.session_state["models"][1]:
+                    conversational_response = hp.query_openai(conversational_prompt_multifile)
             return_info = files_description
 
         st.session_state["dataframe_json_multifile"] = {}
@@ -303,8 +299,6 @@ def tag_query_interface(user_query):
         return conversational_response, return_info
     except Exception as e:
         st.error(f"Error: {e}")
-
-
 
 
 # Main Application Logic
@@ -328,7 +322,10 @@ def main():
     st.subheader("Step 2: View uploaded CSV files")
     view_csv_file()
     st.markdown("---")
-    st.subheader("Step 3: Query the file with AI Assistance")
+    st.subheader("Step 3: Choose the model of choice for the querying")
+    llm = st.selectbox("Choose the model",st.session_state["models"])
+    st.markdown("---")
+    st.subheader("Step 4: Query the file with AI Assistance")
 
     # Initialize chat history
     if "messages" not in st.session_state:
@@ -346,7 +343,7 @@ def main():
         # Add user message to chat history
         st.session_state.messages.append({"role": "user", "content": prompt})
 
-        response, meta = tag_query_interface(prompt)
+        response, meta = tag_query_interface(prompt, llm)
         # Display assistant response in chat message container
         with st.chat_message("assistant"):
             st.markdown(response)
