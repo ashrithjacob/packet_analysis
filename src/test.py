@@ -125,6 +125,21 @@ def get_diverse_vectors(vectors, n_vectors, lambda_param=0.5):
     
     return selected_vectors, selected_indices
 
+import re
+def remove_keywords(text, keywords):
+    pattern = re.compile('|'.join(map(re.escape, keywords)))
+    return pattern.sub('', text)
+
+def filter_keywords(questions, keywords=["unique", "source", "destination", "different", "total", "average"]) -> list:
+    """
+    Filter keywords to remove stopwords and other common words.
+    
+    Parameters:
+        """
+    a = set([remove_keywords(i, keywords) for i in questions])
+    a = list(a)
+    return a
+
 
 if __name__ == "__main__":
     numbers = ['What are the unique source and destination IP addresses in the data?', 
@@ -143,41 +158,39 @@ if __name__ == "__main__":
                'What is the distribution of TCP analysis ACK RTT in the data?', 
                'What are the unique frame protocols used in the data?']
     
-    numbers = ['What are the unique source IP addresses in the data?', 
-               'What are the unique destination IP addresses in the data?', 
-               'What are the unique source ports in the data?', 
-               'What are the unique destination ports in the data?', 
-               'What are the different protocols used in the data?', 
-               'What are the unique source MAC addresses in the data?', 
-               'What are the unique destination MAC addresses in the data?', 
-               'What is the total number of packets in the data?', 
-               'What is the average packet length in the data?', 
-               'What is the maximum packet length in the data?', 
-               'What is the minimum packet length in the data?', 
-               'What are the different types of expert messages in the data?', 
-               'What are the unique OUI values for source MAC addresses in the data?', 
-               'What are the unique OUI values for destination MAC addresses in the data?', 
-               'What is the earliest timestamp in the data?', 'What is the latest timestamp in the data?', 
-               'What is the average time delta between packets in the data?', 
-               'What is the maximum time delta between packets in the data?', 
-               'What is the minimum time delta between packets in the data?', 
-               'What are the unique frame numbers in the data?', 
-               'What are the unique frame protocols in the data?', 
-               'What are the unique IP versions in the data?', 
-               'What are the unique TCP analysis ACK RTT values in the data?', 
-               'What are the unique TCP analysis ACKs frame values in the data?', 
-               'What are the unique Ethernet IG values in the data?', 
-               'What are the unique Ethernet LG values in the data?', 
-               'What are the unique Ethernet src IG values in the data?', 
-               'What are the unique Ethernet src LG values in the data?', 
-               'What are the unique Ethernet dst IG values in the data?', 
-               'What are the unique Ethernet dst LG values in the data?']
-
+    numbers = ['What are the unique source IP addresses in the data?',
+                'What are the unique destination IP addresses in the data?',
+                'What are the unique source MAC addresses in the data?',
+                'What are the unique destination MAC addresses in the data?',
+                'What are the different protocols used in the data?',
+                'What are the unique source ports in the data?',
+                'What are the unique destination ports in the data?',
+                'What is the total number of packets in the data?',
+                'What is the total number of bytes transmitted in the data?',
+                'What are the different types of TCP flags used in the data?',
+                'What are the unique sequence numbers in the data?',
+                'What are the unique acknowledgement numbers in the data?',
+                'What is the average packet length in the data?',
+                'What is the average packet transmission time in the data?',
+                'What are the different types of Ethernet frames in the data?',
+                'What are the unique IP packet lengths in the data?',
+                'What are the unique TCP segment lengths in the data?',
+                'What are the different types of IP protocols used in the data?',
+                'What are the unique BGP message types in the data?',
+                'What are the unique TCP window sizes in the data?']
+    
+    numbers_filtered = filter_keywords(numbers)
+    print(numbers_filtered)
+    
     client_openai = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    embeddings = [get_embedding(i) for i in numbers]
+    embeddings = [get_embedding(i) for i in numbers_filtered]
     #print(cosine_similarity(embeddings))
 
     # Get top 3 most diverse vectors
-    n_vectors = 10
+    n_vectors = 5
     diverse_vectors, indices = get_diverse_vectors(embeddings, n_vectors)
     print("Diverse Vectors:", indices)
+    print("Diverse Questions:")
+    for i in indices:
+        print(numbers_filtered[i])
+    

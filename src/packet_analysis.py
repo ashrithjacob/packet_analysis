@@ -319,7 +319,7 @@ def answer_processing(prompt, llm):
 
     query_expansion_prompt = f"""
                             given the user query: {prompt} and the columns in the pcap file:{files_description}
-                            generate the specific queries that can be asked off the data to extract the required information as described in the user query
+                            generate queries that can be asked off the data to extract the required information as described in the user query
                             Just generate the queries and do not provide any explanation or SQL code
                             """
     
@@ -327,11 +327,39 @@ def answer_processing(prompt, llm):
         query_expansion_response = hp.query_groq(query_expansion_prompt)
     elif llm==st.session_state["models"][0]:
         query_expansion_response = hp.query_openai(query_expansion_prompt)
+
+    # Cleaning the questions
     query_list = query_expansion_response.split("\n")
     query_list = [q.lstrip("'[]0123456789. ") for q in query_list]
-    return query_list
-    #hp.select_best_queries(query_list)
+    question_list = hp.filter_keywords(query_list)
+    st.write(question_list)
+    embeddings = [hp.get_embedding(i) for i in question_list]
+    #print(cosine_similarity(embeddings))
 
+    # Get top 3 most diverse vectors
+    n_vectors = 5
+    diverse_vectors, indices = hp.get_diverse_vectors(embeddings, n_vectors)
+    question_list = [question_list[i] for i in indices]
+    return question_list, files_description
+
+def compile_answer(questions, files_description, llm):
+    for question in questions:
+        prompt = f"""
+            This is the user's query: {question}
+            Here are the pcap files in a dataframe format, each file name is provided with it's contents:{files_description}
+
+            You are an expert assistant specialized in analyzing packet captures (PCAPs) for troubleshooting and technical analysis. Use the data in the provided packet_capture_info to answer user questions accurately. When a specific application layer protocol is referenced, inspect the packet_capture_info according to these hints. Format your responses in markdown with line breaks, bullet points, and appropriate emojis to enhance readability
+            **Network Information Hints:**
+            {hp.network_information_prompt}
+
+            ## Keep the response short and to the point
+            """
+        if llm==st.session_state["models"][1]:
+            query_expansion_response = hp.query_groq(prompt)
+        elif llm==st.session_state["models"][0]:
+            query_expansion_response = hp.query_openai(prompt)
+        print(f"{question}:{query_expansion_response}")
+        print("**************")
 
 
 # Main Application Logic
@@ -376,11 +404,12 @@ def main():
         # Add user message to chat history
         st.session_state.messages.append({"role": "user", "content": prompt})
 
-        #response = answer_processing(prompt, llm)
-        response, meta = tag_query_interface(prompt, llm)
+        questions, files_description = answer_processing(prompt, llm)
+        response_final = compile_answer(questions, files_description, llm)
+        #response, meta = tag_query_interface(prompt, llm)
         # Display assistant response in chat message container
         with st.chat_message("assistant"):
-            st.markdown(response)
+            st.markdown(response_final)
         # Add assistant response to chat history
         st.session_state.messages.append({"role": "assistant", "content": response})
 

@@ -12,6 +12,7 @@ from openai import OpenAI
 from mac_vendor_lookup import MacLookup
 from dotenv import load_dotenv
 import time 
+from sklearn.metrics.pairwise import cosine_similarity
 from groq import Groq
 
 load_dotenv()
@@ -246,7 +247,81 @@ def select_best_queries(queries):
     Select the best queries from a list of queries.
     """
     questions_embedded = [get_embedding(query) for query in queries]
+
+def remove_keywords(text, keywords):
+    pattern = re.compile('|'.join(map(re.escape, keywords)))
+    return pattern.sub('', text)
+
+def filter_keywords(questions, keywords=["unique", "source", "destination", "different", "total", "average"]) -> list:
+    """
+    Filter keywords to remove stopwords and other common words.
     
+    Parameters:
+        """
+    a = set([remove_keywords(i, keywords) for i in questions])
+    a = list(a)
+    return a
+
+def get_diverse_vectors(vectors, n_vectors, lambda_param=0.5):
+    """
+    Select the most diverse vectors using Maximal Marginal Relevance.
+    
+    Parameters:
+    vectors: List or array of vectors
+    n_vectors: Number of vectors to select
+    lambda_param: Trade-off parameter between relevance and diversity (0 to 1)
+                 Higher values favor diversity
+    
+    Returns:
+    selected_vectors: Array of selected diverse vectors
+    selected_indices: Indices of selected vectors in original list
+    """
+    # Convert to numpy array if not already
+    vectors = np.array(vectors)
+    
+    # Calculate similarities between all vectors
+    similarities = cosine_similarity(vectors)
+    
+    # Initialize selected and remaining indices
+    remaining_indices = set(range(len(vectors)))
+    selected_indices = []
+    
+    # Select first vector (highest average similarity to all others)
+    avg_sim = np.mean(similarities, axis=1)
+    first_idx = np.argmax(avg_sim)
+    selected_indices.append(first_idx)
+    remaining_indices.remove(first_idx)
+    
+    # Select remaining vectors using MMR
+    while len(selected_indices) < n_vectors and remaining_indices:
+        # Calculate MMR scores for remaining vectors
+        best_score = float('-inf')
+        best_idx = None
+        
+        for idx in remaining_indices:
+            # Calculate relevance (similarity to all vectors)
+            relevance = np.mean(similarities[idx])
+            
+            # Calculate diversity (negative similarity to already selected)
+            if selected_indices:
+                diversity = -np.max(similarities[idx, selected_indices])
+            else:
+                diversity = 0
+                
+            # Calculate MMR score
+            score = lambda_param * relevance + (1 - lambda_param) * diversity
+            
+            if score > best_score:
+                best_score = score
+                best_idx = idx
+        
+        selected_indices.append(best_idx)
+        remaining_indices.remove(best_idx)
+    
+    # Get selected vectors
+    selected_vectors = vectors[selected_indices]
+    
+    return selected_vectors, selected_indices
 
 
 network_information_prompt = """
