@@ -55,7 +55,9 @@ def pcap_to_csv_with_subset(pcap_path, csv_path):
         "eth.lg",
         "eth.src.ig",
         "eth.ig",
-        "eth.dst",
+        "eth.dst_resolved",
+        "eth.src_resolved",
+        "eth.src.oui_resolved",
         "eth.dst.oui",
         "eth.addr",
         "eth.addr.oui",
@@ -67,7 +69,8 @@ def pcap_to_csv_with_subset(pcap_path, csv_path):
     ]
     pcap_to_df = hp.PcapToDf(pcap_path)
     df = pcap_to_df.create_df()
-    curated_df = df[[col for col in df.columns if col in fields]]
+    #curated_df = df[[col for col in df.columns if col in fields]]
+    curated_df = df
     curated_df.to_csv(csv_path, index=False)
     return curated_df
 
@@ -105,7 +108,7 @@ def process_multifile_pcap():
         full_df = upload_and_process_pcap(uploaded_file)
         if full_df is not None:
             file_name=uploaded_file.name.split(".")[0]
-            st.session_state["dataframe_json_multifile"][file_name] = full_df.dropna(axis=1, how="all")
+            st.session_state["dataframe_json_multifile"][file_name] = full_df.dropna(axis=1, how="any")
         st.session_state["pcap_dataframe_status"] = True
 
 def upload_and_process_pcap(uploaded_file):
@@ -300,7 +303,36 @@ def tag_query_interface(user_query, llm):
 
 
 def answer_processing(prompt, llm):
-    pass
+
+    dataframe_list = list(st.session_state["dataframe_json_multifile"].values())
+
+    if len(dataframe_list) == 1:
+        file_name = list(st.session_state["dataframe_json_multifile"].keys())[0]
+        files_description = f"{file_name} : {dataframe_list[0].to_markdown(index=False)}"
+        columns = dataframe_list[0].columns
+
+    else:
+        files_description = ""
+        for key, value in st.session_state["dataframe_json_multifile"].items():
+            df_in_markdown = value.to_markdown(index=False)
+            files_description += f"{key} : {df_in_markdown}\n\n"
+
+    query_expansion_prompt = f"""
+                            given the user query: {prompt} and the columns in the pcap file:{files_description}
+                            generate the specific queries that can be asked off the data to extract the required information as described in the user query
+                            Just generate the queries and do not provide any explanation or SQL code
+                            """
+    
+    if llm==st.session_state["models"][1]:
+        query_expansion_response = hp.query_groq(query_expansion_prompt)
+    elif llm==st.session_state["models"][0]:
+        query_expansion_response = hp.query_openai(query_expansion_prompt)
+    query_list = query_expansion_response.split("\n")
+    query_list = [q.lstrip("'[]0123456789. ") for q in query_list]
+    return query_list
+    #hp.select_best_queries(query_list)
+
+
 
 # Main Application Logic
 def main():
@@ -344,7 +376,7 @@ def main():
         # Add user message to chat history
         st.session_state.messages.append({"role": "user", "content": prompt})
 
-        #response, meta = answer_processing(prompt, llm)
+        #response = answer_processing(prompt, llm)
         response, meta = tag_query_interface(prompt, llm)
         # Display assistant response in chat message container
         with st.chat_message("assistant"):

@@ -26,6 +26,229 @@ bedrock = boto3.client(
     aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID_USER"),
     aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY_USER"),
 )
+
+class PcapToDf:
+    def __init__(self, pcap_file):
+        self.pcap_file = pcap_file
+        self.row = []
+        self.df = pd.DataFrame()
+        self.json_path = self.create_json()
+        self.pcap_to_json()
+
+    def create_json(self):
+        return self.pcap_file.replace(".pcap", ".json")
+
+    def pcap_to_json(self):
+        command = f"tshark -nlr {self.pcap_file} -T json > {self.json_path}"
+        '''
+        command = f"""tshark -r your_pcap_file.pcapng -T fields \
+                    # General Packet Information
+            -e frame.number \
+            -e frame.time_relative \
+            -e frame.len \
+            -e frame.protocols \
+            
+            # Ethernet
+            -e eth.src \
+            -e eth.dst \
+
+            # IP
+            -e ip.version \
+            -e ip.len \
+            -e ip.src \
+            -e ip.dst \
+            -e ip.proto \
+
+            # TCP
+            -e tcp.srcport \
+            -e tcp.dstport \
+            -e tcp.time_relative \
+            -e tcp.time_delta \
+            -e tcp.analysis.acks_frame \
+            -e tcp.analysis.ack_rtt \
+
+            # UDP
+            -e udp.srcport \
+            -e udp.dstport \
+
+            # DNS
+            -e dns.qry.name \
+            -e dns.a \
+
+            # RADIUS Fields
+            -e radius.code \
+            -e radius.user_name \
+            -e radius.user_password \
+            -e radius.nas_ip_address \
+            -e radius.nas_port \
+            -e radius.called_station_id \
+            -e radius.calling_station_id \
+            -e radius.service_type \
+            -e radius.framed_ip_address \
+            -e radius.nas_identifier \
+            -e radius.nas_port_type \
+            -e radius.message_authenticator \
+
+            # EAPOL Fields
+            -e eapol.key_info \
+            -e eapol.key_length \
+            -e eapol.key_mic \
+            -e eapol.key_data \
+            -e eapol.key_descriptor_version \
+            -e eapol.key_type \
+
+            # WiFi Fields
+            -e wlan.fc.type_subtype \
+            -e wlan.ssid \
+            -e wlan.ta \
+            -e wlan.ra \
+            -e wlan.ta_resolved \
+            -e wlan.ra_resolved \
+            -e wlan.fc.retry \
+            -e wlan.fc.more_fragments \
+            -e wlan.fc.from_ds \
+            -e wlan.fc.to_ds \
+            -e wlan.rsn.version \
+            -e wlan.rsn.cipher_suite \
+            -e wlan.rsn.akm_suite \
+
+            # Expert Information
+            -e _ws.expert.message """
+        '''
+        subprocess.run(command, shell=True)
+
+    def extract_vals_from_dict(self, my_dict):
+        if my_dict is not None:
+            s = my_dict.items()
+            for k, v in s:
+                if isinstance(v, dict):
+                    my_dict = v
+                    self.extract_vals_from_dict(my_dict)
+                else:
+                    self.columns[k] = v
+                    my_dict = None
+
+    def add_row_with_missing_cols(self, df, new_row_dict):
+        # Identify existing and new columns
+        existing_cols = set(df.columns)
+        new_cols = set(new_row_dict.keys()) - existing_cols
+
+        # Add missing columns with NaN
+        # df[list(new_cols)] = np.nan
+        df = df.reindex(columns=list(df.columns) + list(new_cols), fill_value=np.nan)
+        # Add the new row
+        df.loc[len(df)] = new_row_dict
+        return df
+
+    def create_df(self):
+        with open(self.json_path, "r") as file:
+            data_dict = json.load(file)
+        for d in data_dict:
+            self.columns = {}
+            self.extract_vals_from_dict(d)
+            self.df = self.add_row_with_missing_cols(self.df, self.columns)
+        return self.df
+
+
+def query_openai(prompt):
+    """
+    Query the OpenAI GPT model with a prompt using the updated client.
+    """
+    try:
+        chat_completion = client_openai.chat.completions.create(
+            model="gpt-4o",  # Specify the model
+            temperature=0.0,  # Set the temperature to 0 for deterministic outputs
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return chat_completion.choices[0].message.content
+    except Exception as e:
+        raise RuntimeError(f"Error querying OpenAI API: {e}")
+
+
+def query_bedrock(prompt,model_id="meta.llama3-1-70b-instruct-v1:0"):
+    max_tokens = 8192
+    formatted_prompt = f"""
+        <|begin_of_text|>
+        <|start_header_id|>system<|end_header_id|>
+        {system_prompt}
+        <|start_header_id|>user<|end_header_id|>
+        {prompt}
+        <|eot_id|>
+        <|start_header_id|>assistant<|end_header_id|>
+        """
+            
+    native_request = {
+        "prompt": formatted_prompt,
+        "max_gen_len": max_tokens,
+        "temperature": 0.0,
+        }
+    request = json.dumps(native_request)
+
+    try:
+        # Invoke the model with the request.
+        response = bedrock.invoke_model(
+        modelId=model_id,
+        body=request,
+        contentType="application/json"
+        )
+
+        # Decode the response body.
+        model_response = json.loads(response["body"].read())
+        response_text = model_response["generation"]
+        return response_text
+
+    except (ClientError, Exception) as e:
+        st.error(f"ERROR: Can't invoke '{model_id}'. Reason: {e}")
+
+
+def query_groq(query, model_id="llama-3.3-70b-versatile"):
+    try:
+        chat_completion = client_groq.chat.completions.create(
+        messages=[
+        {
+            "role": "system",
+            "content": system_prompt,
+        },
+        {
+            "role": "user",
+            "content": query,
+        }
+    ],
+
+        # The language model which will generate the completion.
+        model=model_id,
+        temperature=0.0,
+        max_tokens=8192,
+        top_p=1,
+        stop=None,
+        stream=False,
+    )
+        return chat_completion.choices[0].message.content
+    except Exception as e:
+        raise RuntimeError(f"Error querying Groq API: {e}")
+
+
+def get_detailed_prompt(file_info, title, body):
+    detailed_prompt = f"""
+        - 📄 **packet network data**:{file_info}
+        - 📚 **from the above Instructions**: 
+                Provide detailed insights based on the data with regards to {title} and expound further on {body}.
+        """
+    return detailed_prompt
+
+
+def get_embedding(text, model="text-embedding-3-small"):
+    return client_openai.embeddings.create(input = [text], model=model).data[0].embedding
+
+
+def select_best_queries(queries):
+    """
+    Select the best queries from a list of queries.
+    """
+    questions_embedded = [get_embedding(query) for query in queries]
+    
+
+
 network_information_prompt = """
             - 🌐 **HTTP**: `tcp.port == 80`
             - 🔐 **HTTPS**: `tcp.port == 443`
@@ -125,141 +348,6 @@ system_prompt = """You are a network engineer capable of understanding network t
 
                         provided by packets captured\n. You hae been given a csv file to analyze, 
                         where each row represents a packet and the columns represent the packet's attributes."""
-
-class PcapToDf:
-    def __init__(self, pcap_file):
-        self.pcap_file = pcap_file
-        self.row = []
-        self.df = pd.DataFrame()
-        self.json_path = self.create_json()
-        self.pcap_to_json()
-
-    def create_json(self):
-        return self.pcap_file.replace(".pcap", ".json")
-
-    def pcap_to_json(self):
-        command = f"tshark -nlr {self.pcap_file} -T json > {self.json_path}"
-        subprocess.run(command, shell=True)
-
-    def extract_vals_from_dict(self, my_dict):
-        if my_dict is not None:
-            s = my_dict.items()
-            for k, v in s:
-                if isinstance(v, dict):
-                    my_dict = v
-                    self.extract_vals_from_dict(my_dict)
-                else:
-                    self.columns[k] = v
-                    my_dict = None
-
-    def add_row_with_missing_cols(self, df, new_row_dict):
-        # Identify existing and new columns
-        existing_cols = set(df.columns)
-        new_cols = set(new_row_dict.keys()) - existing_cols
-
-        # Add missing columns with NaN
-        # df[list(new_cols)] = np.nan
-        df = df.reindex(columns=list(df.columns) + list(new_cols), fill_value=np.nan)
-        # Add the new row
-        df.loc[len(df)] = new_row_dict
-        return df
-
-    def create_df(self):
-        with open(self.json_path, "r") as file:
-            data_dict = json.load(file)
-        for d in data_dict:
-            self.columns = {}
-            self.extract_vals_from_dict(d)
-            self.df = self.add_row_with_missing_cols(self.df, self.columns)
-        return self.df
-
-
-def query_openai(prompt):
-    """
-    Query the OpenAI GPT model with a prompt using the updated client.
-    """
-    try:
-        chat_completion = client_openai.chat.completions.create(
-            model="gpt-4o",  # Specify the model
-            temperature=0.0,  # Set the temperature to 0 for deterministic outputs
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return chat_completion.choices[0].message.content
-    except Exception as e:
-        raise RuntimeError(f"Error querying OpenAI API: {e}")
-
-
-def query_bedrock(prompt,model_id="meta.llama3-1-70b-instruct-v1:0"):
-    max_tokens = 8192
-    formatted_prompt = f"""
-        <|begin_of_text|>
-        <|start_header_id|>system<|end_header_id|>
-        {system_prompt}
-        <|start_header_id|>user<|end_header_id|>
-        {prompt}
-        <|eot_id|>
-        <|start_header_id|>assistant<|end_header_id|>
-        """
-            
-    native_request = {
-        "prompt": formatted_prompt,
-        "max_gen_len": max_tokens,
-        "temperature": 0.0,
-        }
-    request = json.dumps(native_request)
-
-    try:
-        # Invoke the model with the request.
-        response = bedrock.invoke_model(
-        modelId=model_id,
-        body=request,
-        contentType="application/json"
-        )
-
-        # Decode the response body.
-        model_response = json.loads(response["body"].read())
-        response_text = model_response["generation"]
-        return response_text
-
-    except (ClientError, Exception) as e:
-        st.error(f"ERROR: Can't invoke '{model_id}'. Reason: {e}")
-
-
-def get_detailed_prompt(file_info, title, body):
-    detailed_prompt = f"""
-        - 📄 **packet network data**:{file_info}
-        - 📚 **from the above Instructions**: 
-                Provide detailed insights based on the data with regards to {title} and expound further on {body}.
-        """
-    return detailed_prompt
-
-
-def query_groq(query, model_id="llama-3.3-70b-versatile"):
-    try:
-        chat_completion = client_groq.chat.completions.create(
-        messages=[
-        {
-            "role": "system",
-            "content": system_prompt,
-        },
-        {
-            "role": "user",
-            "content": query,
-        }
-    ],
-
-        # The language model which will generate the completion.
-        model=model_id,
-        temperature=0.0,
-        max_tokens=8192,
-        top_p=1,
-        stop=None,
-        stream=False,
-    )
-        return chat_completion.choices[0].message.content
-    except Exception as e:
-        raise RuntimeError(f"Error querying Groq API: {e}")
-
 
 
 
