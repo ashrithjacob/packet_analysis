@@ -22,8 +22,8 @@ class Article(BaseModel):
     body: str
 
 # client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-st.set_page_config(page_title="Nanites AI PCAP Copilot", page_icon="📄")
-st.session_state["models"]=("Llama-3.3-70b", "GPT-4o")
+st.set_page_config(page_title="Nanites AI PCAP Copilot", page_icon="images/black.png")
+st.session_state["models"]=("GPT-4o", "Llama-3.3-70b")
 st.session_state["dataframe_json_multifile"] = {}
 
 # Function to convert .pcap to CSV using a subset of fields
@@ -216,8 +216,6 @@ def tag_query_interface(user_query, llm):
             df_in_markdown = value.to_markdown(index=False)
             files_description += f"{key} : {df_in_markdown}\n\n"
 
-    #user_query = st.text_input("Ask a question about the PCAP data:")
-    #st.session_state["messages"].append({"role": "user", "content": user_query})
 
     if not user_query.strip():
         st.warning("Please enter a question.")
@@ -253,9 +251,9 @@ def tag_query_interface(user_query, llm):
             Your goal is to provide a clear, concise, and accurate analysis of the packet capture data, leveraging the protocol hints and packet details.
             """
             with st.spinner(f"Generating conversational response with {llm}..."):
-                if llm==st.session_state["models"][0]:
+                if llm==st.session_state["models"][1]:
                     conversational_response = hp.query_groq(conversational_prompt_with_hints)
-                elif llm==st.session_state["models"][1]:
+                elif llm==st.session_state["models"][0]:
                     conversational_response = hp.query_openai(conversational_prompt_with_hints)
             return_info = result_preview
         else:
@@ -288,9 +286,9 @@ def tag_query_interface(user_query, llm):
             DO NOT GIVE ANY INTRODUCTION LIKE AN ESSAY, JUST ANSWER THE QEURY DIRECTLY BASED ON THE INFORMATION PROVIDED
             """
             with st.spinner(f"Generating conversational response with {llm}..."):
-                if llm==st.session_state["models"][0]:
+                if llm==st.session_state["models"][1]:
                     conversational_response = hp.query_groq(conversational_prompt_multifile)
-                elif llm==st.session_state["models"][1]:
+                elif llm==st.session_state["models"][0]:
                     conversational_response = hp.query_openai(conversational_prompt_multifile)
             return_info = files_description
 
@@ -300,6 +298,9 @@ def tag_query_interface(user_query, llm):
     except Exception as e:
         st.error(f"Error: {e}")
 
+
+def answer_processing(prompt, llm):
+    pass
 
 # Main Application Logic
 def main():
@@ -343,6 +344,7 @@ def main():
         # Add user message to chat history
         st.session_state.messages.append({"role": "user", "content": prompt})
 
+        #response, meta = answer_processing(prompt, llm)
         response, meta = tag_query_interface(prompt, llm)
         # Display assistant response in chat message container
         with st.chat_message("assistant"):
