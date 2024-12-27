@@ -1,4 +1,4 @@
-version: "3"
+version: "2"
 
 networks:
   app-network:
@@ -8,7 +8,7 @@ services:
   app:
     build:
       context: .
-    image: 122610501872.dkr.ecr.us-west-2.amazonaws.com/pcap2:latest
+    image: 122610501872.dkr.ecr.us-west-2.amazonaws.com/pcap_main:latest
     ports:
       - "8501:8501"
     networks:
