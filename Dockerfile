@@ -29,7 +29,8 @@ RUN echo "==> Install more pip packages..." \
     && pip install --break-system-packages -U --quiet tabulate==0.9.0 \
     && pip install --break-system-packages -U --quiet groq==0.13.0\
     && pip install --break-system-packages -U --quiet openai==1.57.2\
-    && pip install --break-system-packages -U --quiet mac-vendor-lookup==0.1.12
+    && pip install --break-system-packages -U --quiet mac-vendor-lookup==0.1.12\
+    && pip install --break-system-packages -U --quiet scikit-learn==1.6.0
 
 
 # Install tshark
@@ -46,4 +47,4 @@ COPY .env .env
 
 EXPOSE 8501
 
-ENTRYPOINT ["streamlit", "run", "src/packet_tag.py", "--server.port=8501", "--server.address=0.0.0.0"]
+ENTRYPOINT ["streamlit", "run", "src/packet_analysis.py", "--server.port=8501", "--server.address=0.0.0.0"]

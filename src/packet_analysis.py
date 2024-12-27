@@ -1,108 +1,82 @@
-import json
+import os
 import pandas as pd
 import subprocess
-import numpy as np
 import streamlit as st
 import re
-import os
 import boto3
+import anthropic
+import json
+import helper as hp
 from botocore.exceptions import ClientError
+from openai import OpenAI
+from mac_vendor_lookup import MacLookup
 from dotenv import load_dotenv
+from groq import Groq
+from pydantic import BaseModel
 
 load_dotenv()
 
-client = boto3.client(
-    service_name="bedrock-runtime",
-    region_name="us-west-2",
-    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID_USER"),
-    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY_USER"),
-)
 
-def query_bedrock(prompt, model_id="meta.llama3-1-70b-instruct-v1:0"):
-    system_prompt = """You are a network engineer capable of understanding network traffic through info 
-                        provided by packets captured\n. You hae been given a csv file to analyze, 
-                        where each row represents a packet and the columns represent the packet's attributes."""
-    max_tokens = 8192
-    formatted_prompt = f"""
-        <|begin_of_text|>
-        <|start_header_id|>system<|end_header_id|>
-        {system_prompt}
-        <|start_header_id|>user<|end_header_id|>
-        {prompt}
-        <|eot_id|>
-        <|start_header_id|>assistant<|end_header_id|>
-        """
-            
-    native_request = {
-        "prompt": formatted_prompt,
-        "max_gen_len": max_tokens,
-        "temperature": 0.0,
-        }
-    request = json.dumps(native_request)
+class Article(BaseModel):
+    title: str
+    body: str
 
-    try:
-        # Invoke the model with the request.
-        response = client.invoke_model(
-        modelId=model_id,
-        body=request,
-        contentType="application/json"
-        )
+# client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+st.set_page_config(page_title="Nanites AI PCAP Copilot", page_icon="images/black.png")
+st.session_state["models"]=("GPT-4o", "Llama-3.3-70b")
+st.session_state["dataframe_json_multifile"] = {}
 
-        # Decode the response body.
-        model_response = json.loads(response["body"].read())
-        response_text = model_response["generation"]
-        return response_text
+# Function to convert .pcap to CSV using a subset of fields
+def pcap_to_csv_with_subset(pcap_path, csv_path):
+    fields = [
+        "frame.number",
+        "frame.time",
+        "frame.len",
+        "frame.ignored",
+        "frame.protocols",
+        "ip.version",
+        "ip.len",
+        "ip.src",
+        "ip.dst",
+        "ip.proto",
+        "tcp.srcport",
+        "tcp.dstport",
+        "tcp.time_relative",
+        "tcp.time_delta",
+        "tcp.analysis.acks_frame",
+        "tcp.analysis.ack_rtt",
+        "udp.srcport",
+        "udp.dstport",
+        "eth.src",
+        "eth.src.oui",
+        "eth.addr",
+        "eth.addr.oui",
+        "eth.src.lg",
+        "eth.lg",
+        "eth.src.ig",
+        "eth.ig",
+        "eth.dst_resolved",
+        "eth.src_resolved",
+        "eth.src.oui_resolved",
+        "eth.dst.oui",
+        "eth.addr",
+        "eth.addr.oui",
+        "eth.dst.lg",
+        "eth.dst.ig",
+        "dns.qry.name",
+        "dns.a",
+        "_ws.expert.message",
+    ]
+    pcap_to_df = hp.PcapToDf(pcap_path)
+    df = pcap_to_df.create_df()
+    #curated_df = df[[col for col in df.columns if col in fields]]
+    curated_df = df
+    curated_df.to_csv(csv_path, index=False)
+    return curated_df
 
-    except (ClientError, Exception) as e:
-        st.error(f"ERROR: Can't invoke '{model_id}'. Reason: {e}")
 
-
-class PcapToDf:
-    def __init__(self, pcap_file):
-        self.pcap_file = pcap_file
-        self.row = []
-        self.df = pd.DataFrame()
-        self.json_path = self.create_json()
-        self.pcap_to_json()
-
-    def create_json(self):
-        return self.pcap_file.replace(".pcap", ".json")
-
-    def pcap_to_json(self):
-        command = f"tshark -nlr {self.pcap_file} -T json > {self.json_path}"
-        subprocess.run(command, shell=True)
-
-    def extract_vals_from_dict(self, my_dict):
-        if my_dict is not None:
-            s = my_dict.items()
-            for k, v in s:
-                if isinstance(v, dict):
-                    my_dict = v
-                    self.extract_vals_from_dict(my_dict)
-                else:
-                    self.columns[k] = v
-                    my_dict = None
-
-    def add_row_with_missing_cols(self, df, new_row_dict):
-        # Identify existing and new columns
-        existing_cols = set(df.columns)
-        new_cols = set(new_row_dict.keys()) - existing_cols
-
-        # Add missing columns with NaN
-        # df[list(new_cols)] = np.nan
-        df = df.reindex(columns=list(df.columns) + list(new_cols), fill_value=np.nan)
-        # Add the new row
-        df.loc[len(df)] = new_row_dict
-        return df
-
-    def create_df(self):
-        with open(self.json_path, "r") as file:
-            data_dict = json.load(file)
-        for d in data_dict:
-            self.columns = {}
-            self.extract_vals_from_dict(d)
-            self.df = self.add_row_with_missing_cols(self.df, self.columns)
-        return self.df
+def load_csv_as_dataframe(csv_path):
+    return pd.read_csv(csv_path)
 
 
 def generate_query_prompt(schema, query):
@@ -118,24 +92,29 @@ def generate_query_prompt(schema, query):
     Convert the following question into a Pandas DataFrame query:
     Question: {query}
 
-    Provide the query code only. Do not include explanations. 
-    Use no print,return statements, directly just the query code.
+    Provide the query code only. Do not include explanations.
     """
-
 
 def clean_query(query):
     if "```" in query:
         cleaned_text = re.sub(r"^```\w*\s*|\s*```$", "", query).strip()
     else:
         cleaned_text = query.strip()
-    return cleaned_text.split("\n")
+    return cleaned_text.split("\n")[0]
 
+def process_multifile_pcap():
+    uploaded_files = st.file_uploader("Upload a PCAP file(s)", type=["pcap", "pcapng"], accept_multiple_files=True)
+    for uploaded_file in uploaded_files:
+        full_df = upload_and_process_pcap(uploaded_file)
+        if full_df is not None:
+            file_name=uploaded_file.name.split(".")[0]
+            st.session_state["dataframe_json_multifile"][file_name] = full_df.dropna(axis=1, how="any")
+        st.session_state["pcap_dataframe_status"] = True
 
-def upload_and_process_pcap():
+def upload_and_process_pcap(uploaded_file):
     MAX_FILE_SIZE_MB = 1
-    uploaded_file = st.file_uploader("Upload a PCAP file", type=["pcap", "pcapng"])
-
     if uploaded_file:
+        st.write(f"Processing uploaded PCAP file...{uploaded_file.name}")
         if uploaded_file.size > MAX_FILE_SIZE_MB * 1024 * 1024:
             st.error(f"The file exceeds the maximum size of {MAX_FILE_SIZE_MB} MB.")
             return
@@ -144,198 +123,320 @@ def upload_and_process_pcap():
         os.makedirs(temp_dir, exist_ok=True)
 
         pcap_path = os.path.join(temp_dir, uploaded_file.name)
+        csv_path = pcap_path.replace(".pcap", ".csv")
 
         with open(pcap_path, "wb") as f:
             f.write(uploaded_file.getvalue())
 
         try:
-            pcap_convertor = PcapToDf(pcap_path)
-            df = pcap_convertor.create_df()
-            st.session_state["pcap_dataframe"] = df
-
+            full_df = pcap_to_csv_with_subset(pcap_path, csv_path)
+            st.success("PCAP file successfully uploaded!")
         except Exception as e:
             st.error(f"Error processing PCAP: {e}")
         finally:
             if os.path.exists(pcap_path):
                 os.remove(pcap_path)
+            if os.path.exists(csv_path):
+                os.remove(csv_path)
+            return full_df
 
 
-def tag_query_interface():
+class Tools:
+    def agent_prompt(prompt):
+        """
+        Prompt the agent with a question and return the response.
+        """
+        response = hp.query_groq(prompt)
+        return response
+
+    def filter_json(str_data):
+        if "```" in str_data:
+            code_blocks = re.findall(r"```(?:.*?\n)?(.*?)```", str_data, re.DOTALL)
+            code_blocks = code_blocks[0]
+        else:
+            code_blocks = re.findall(r"{(.*?)}", str_data, re.DOTALL)
+            code_blocks = "{" + code_blocks[0] + "}"
+        print("STR", str_data)
+        print("Code Blocks1:", code_blocks)
+        return json.loads(code_blocks)
+
+    def mac_vendor_lookup(json_data):
+        """
+        Lookup the vendor information for a given MAC address.
+        """
+        dict_lookup = {}
+        for key, val in json_data.items():
+            vendor = MacLookup().lookup(val)
+            dict_lookup[val] = vendor
+        return dict_lookup
+
+    def run_mac(result_preview):
+        try:
+            prompt = f"""
+                    From these query results:{result_preview}
+                    identify the MAC address of the source and destination IP addresses and return all mac addresses as json
+                    IMPORTANT: respond in the format ``` {{"column_name_1": "mac_address", "column_name_2": "mac_address"}} ```
+                    """
+            response = Tools.agent_prompt(prompt)
+            json_data = Tools.filter_json(response)
+            lookup = Tools.mac_vendor_lookup(json_data)
+            return str(lookup), str(response)
+        except Exception as e:
+            return str(e), str(e)
+
+    def run_network_matching(result_preview):
+        prompt = f"""
+                From these query results:{result_preview}
+                and these network information hints:{hp.network_information_prompt}, identify the protocols used with source and destination IP addresses.
+                DO NOT include specific packet details or repeat the network information hints
+                """
+        response = Tools.agent_prompt(prompt)
+        return response
+
+
+def view_csv_file():
+    dataframe_list = list(st.session_state["dataframe_json_multifile"].values())
+    dataframe_list_keys = list(st.session_state["dataframe_json_multifile"].keys())
+    for i, df in enumerate(dataframe_list):
+        st.markdown(f"*{dataframe_list_keys[i]}.csv*")
+        st.dataframe(df)
+
+
+def tag_query_interface(user_query, llm):
     """
     Provide an interface to query the processed PCAP table using OpenAI LLM and generate conversational responses.
     """
-    if "pcap_dataframe" not in st.session_state:
-        st.error("Please upload and process a PCAP file first.")
+    if "pcap_dataframe_status" not in st.session_state:
+        st.error("Please upload and process PCAP file(s) first.")
+        return
+    dataframe_list = list(st.session_state["dataframe_json_multifile"].values())
+
+    if len(dataframe_list) == 1:
+        df_full = dataframe_list[0]
+    else:
+        files_description = ""
+        for key, value in st.session_state["dataframe_json_multifile"].items():
+            df_in_markdown = value.to_markdown(index=False)
+            files_description += f"{key} : {df_in_markdown}\n\n"
+
+
+    if not user_query.strip():
+        st.warning("Please enter a question.")
         return
 
-    df = st.session_state["pcap_dataframe"]
-    user_query = st.text_input("Ask a question about the PCAP data:")
-
-    if st.button("Send Query"):
-        if not user_query.strip():
-            st.warning("Please enter a question.")
-            return
-
-        # Generate schema and prompt for query generation
-        print(len(df.columns))
-        schema = "\n".join(f"- {col}" for col in df.columns)
-        prompt = generate_query_prompt(schema, user_query)
-
-        try:
-            # Query OpenAI to generate DataFrame query
-            with st.spinner("Generating DataFrame query..."):
-                query_code = query_bedrock(prompt)
-            print("QUERY CODE", query_code)
-            query_code_refined = clean_query(query_code)
-            st.write("QUERY CODE REFINED", query_code_refined)
-
-            # Execute the query on the DataFrame
-            result = []
-            result_md = ""
-            for q in query_code_refined:
-                result.append({f"{q}": eval(q, {"df": df})})
-            print("RESULT", result)
-            st.markdown("### Query Results:")
-            
-            min_columns = min(150,len(df.columns))
-            for r in result:
-                key = list(r.keys())[0]
-                val = list(r.values())[0].iloc[:, :min_columns]
-                st.dataframe(val)
-                # Convert results to markdown for LLM
-                result_md += f"{key}:{(val.to_markdown(index=False))}" + "\n\n"
-                print("val shape", val.shape)
-
-            # print("RESULT MD",result_md)
-            conversational_prompt = f"""
-            Here are the query results based on the user's question:
-
-            {result_md}
+    try:
+        if len(list(st.session_state["dataframe_json_multifile"].values())) == 1:
+            query_code = 'df.describe(include="all")'
+            result = eval(query_code, {"df": df_full})
+            result_preview = result.to_markdown(index=False)
+            # MAC ID agent
+            mac_mapping, mac_response = Tools.run_mac(result_preview)
+            # Traffic details
+            result_traffic = Tools.run_network_matching(result_preview)
+            st.markdown(f"### Traffic Details:{result_traffic}")
+            conversational_prompt_with_hints = f"""
+            This is the user's query: {user_query}
+            Here are the query results based on the user's question:{result_preview}
 
             You are an expert assistant specialized in analyzing packet captures (PCAPs) for troubleshooting and technical analysis. Use the data in the provided packet_capture_info to answer user questions accurately. When a specific application layer protocol is referenced, inspect the packet_capture_info according to these hints. Format your responses in markdown with line breaks, bullet points, and appropriate emojis to enhance readability
-            **Protocol Hints:**
-            - 🌐 **HTTP**: `tcp.port == 80`
-            - 🔐 **HTTPS**: `tcp.port == 443`
-            - 🛠 **SNMP**: `udp.port == 161` or `udp.port == 162`
-            - ⏲ **NTP**: `udp.port == 123`
-            - 📁 **FTP**: `tcp.port == 21`
-            - 🔒 **SSH**: `tcp.port == 22`
-            - 🔄 **BGP**: `tcp.port == 179`
-            - 🌐 **OSPF**: IP protocol 89 (works directly on IP, no TCP/UDP)
-            - 🔍 **DNS**: `udp.port == 53` (or `tcp.port == 53` for larger queries/zone transfers)
-            - 💻 **DHCP**: `udp.port == 67` (server), `udp.port == 68` (client)
-            - 📧 **SMTP**: `tcp.port == 25` (email sending)
-            - 📬 **POP3**: `tcp.port == 110` (email retrieval)
-            - 📥 **IMAP**: `tcp.port == 143` (advanced email retrieval)
-            - 🔒 **LDAPS**: `tcp.port == 636` (secure LDAP)
-            - 📞 **SIP**: `tcp.port == 5060` or `udp.port == 5060` (for multimedia sessions)
-            - 🎥 **RTP**: No fixed port, commonly used with SIP for multimedia streams.
-            - 🖥 **Telnet**: `tcp.port == 23`
-            - 📂 **TFTP**: `udp.port == 69`
-            - 💾 **SMB**: `tcp.port == 445` (Server Message Block)
-            - 🌍 **RDP**: `tcp.port == 3389` (Remote Desktop Protocol)
-            - 📡 **SNTP**: `udp.port == 123` (Simple Network Time Protocol)
-            - 🔄 **RIP**: `udp.port == 520` (Routing Information Protocol)
-            - 🌉 **MPLS**: IP protocol 137 (Multi-Protocol Label Switching)
-            - 🔗 **EIGRP**: IP protocol 88 (Enhanced Interior Gateway Routing Protocol)
-            - 🖧 **L2TP**: `udp.port == 1701` (Layer 2 Tunneling Protocol)
-            - 💼 **PPTP**: `tcp.port == 1723` (Point-to-Point Tunneling Protocol)
-            - 🔌 **Telnet**: `tcp.port == 23` (Unencrypted remote access)
-            - 🛡 **Kerberos**: `tcp.port == 88` (Authentication protocol)
-            - 🖥 **VNC**: `tcp.port == 5900` (Virtual Network Computing)
-            - 🌐 **LDAP**: `tcp.port == 389` (Lightweight Directory Access Protocol)
-            - 📡 **NNTP**: `tcp.port == 119` (Network News Transfer Protocol)
-            - 📠 **RSYNC**: `tcp.port == 873` (Remote file sync)
-            - 📡 **ICMP**: IP protocol 1 (Internet Control Message Protocol, no port)
-            - 🌐 **GRE**: IP protocol 47 (Generic Routing Encapsulation, no port)
-            - 📶 **IKE**: `udp.port == 500` (Internet Key Exchange for VPNs)
-            - 🔐 **ISAKMP**: `udp.port == 4500` (for VPN traversal)
-            - 🛠 **Syslog**: `udp.port == 514`
-            - 🖨 **IPP**: `tcp.port == 631` (Internet Printing Protocol)
-            - 📡 **RADIUS**: `udp.port == 1812` (Authentication), `udp.port == 1813` (Accounting)
-            - 💬 **XMPP**: `tcp.port == 5222` (Extensible Messaging and Presence Protocol)
-            - 🖧 **Bittorrent**: `tcp.port == 6881-6889` (File-sharing protocol)
-            - 🔑 **OpenVPN**: `udp.port == 1194`
-            - 🖧 **NFS**: `tcp.port == 2049` (Network File System)
-            - 🔗 **Quic**: `udp.port == 443` (UDP-based transport protocol)
-            - 🌉 **STUN**: `udp.port == 3478` (Session Traversal Utilities for NAT)
-            - 🛡 **ESP**: IP protocol 50 (Encapsulating Security Payload for VPNs)
-            - 🛠 **LDP**: `tcp.port == 646` (Label Distribution Protocol for MPLS)
-            - 🌐 **HTTP/2**: `tcp.port == 8080` (Alternate HTTP port)
-            - 📁 **SCP**: `tcp.port == 22` (Secure file transfer over SSH)
-            - 🔗 **GTP-C**: `udp.port == 2123` (GPRS Tunneling Protocol Control)
-            - 📶 **GTP-U**: `udp.port == 2152` (GPRS Tunneling Protocol User)
-            - 🔄 **BGP**: `tcp.port == 179` (Border Gateway Protocol)
-            - 🌐 **OSPF**: IP protocol 89 (Open Shortest Path First)
-            - 🔄 **RIP**: `udp.port == 520` (Routing Information Protocol)
-            - 🔄 **EIGRP**: IP protocol 88 (Enhanced Interior Gateway Routing Protocol)
-            - 🌉 **LDP**: `tcp.port == 646` (Label Distribution Protocol)
-            - 🛰 **IS-IS**: ISO protocol 134 (Intermediate System to Intermediate System, works directly on IP)
-            - 🔄 **IGMP**: IP protocol 2 (Internet Group Management Protocol, for multicast)
-            - 🔄 **PIM**: IP protocol 103 (Protocol Independent Multicast)
-            - 📡 **RSVP**: IP protocol 46 (Resource Reservation Protocol)
-            - 🔄 **Babel**: `udp.port == 6696` (Babel routing protocol)
-            - 🔄 **DVMRP**: IP protocol 2 (Distance Vector Multicast Routing Protocol)
-            - 🛠 **VRRP**: `ip.protocol == 112` (Virtual Router Redundancy Protocol)
-            - 📡 **HSRP**: `udp.port == 1985` (Hot Standby Router Protocol)
-            - 🔄 **LISP**: `udp.port == 4341` (Locator/ID Separation Protocol)
-            - 🛰 **BFD**: `udp.port == 3784` (Bidirectional Forwarding Detection)
-            - 🌍 **HTTP/3**: `udp.port == 443` (Modern web traffic)
-            - 🛡 **IPSec**: IP protocol 50 (ESP), IP protocol 51 (AH)
-            - 📡 **L2TPv3**: `udp.port == 1701` (Layer 2 Tunneling Protocol)
-            - 🛰 **MPLS**: IP protocol 137 (Multi-Protocol Label Switching)
-            - 🔑 **IKEv2**: `udp.port == 500`, `udp.port == 4500` (Internet Key Exchange Version 2 for VPNs)
-            - 🛠 **NetFlow**: `udp.port == 2055` (Flow monitoring)
-            - 🌐 **CARP**: `ip.protocol == 112` (Common Address Redundancy Protocol)
-            - 🌐 **SCTP**: `tcp.port == 9899` (Stream Control Transmission Protocol)
-            - 🖥 **VNC**: `tcp.port == 5900-5901` (Virtual Network Computing)
-            - 🌐 **WebSocket**: `tcp.port == 80` (ws), `tcp.port == 443` (wss)
-            - 🔗 **NTPv4**: `udp.port == 123` (Network Time Protocol version 4)
-            - 📞 **MGCP**: `udp.port == 2427` (Media Gateway Control Protocol)
-            - 🔐 **FTPS**: `tcp.port == 990` (File Transfer Protocol Secure)
-            - 📡 **SNMPv3**: `udp.port == 162` (Simple Network Management Protocol version 3)
-            - 🔄 **VXLAN**: `udp.port == 4789` (Virtual Extensible LAN)
-            - 📞 **H.323**: `tcp.port == 1720` (Multimedia communications protocol)
-            - 🔄 **Zebra**: `tcp.port == 2601` (Zebra routing daemon control)
-            - 🔄 **LACP**: `udp.port == 646` (Link Aggregation Control Protocol)
-            - 📡 **SFlow**: `udp.port == 6343` (SFlow traffic monitoring)
-            - 🔒 **OCSP**: `tcp.port == 80` (Online Certificate Status Protocol)
-            - 🌐 **RTSP**: `tcp.port == 554` (Real-Time Streaming Protocol)
-            - 🔄 **RIPv2**: `udp.port == 521` (Routing Information Protocol version 2)
-            - 🌐 **GRE**: IP protocol 47 (Generic Routing Encapsulation)
-            - 🌐 **L2F**: `tcp.port == 1701` (Layer 2 Forwarding Protocol)
-            - 🌐 **RSTP**: No port (Rapid Spanning Tree Protocol, L2 protocol)
-            - 📞 **RTCP**: Dynamic ports (Real-time Transport Control Protocol)
-    
-            **Additional Info:**
-            - Include context about traffic patterns (e.g., latency, packet loss).
-            - Use protocol hints when analyzing traffic to provide clear explanations of findings.
-            - Highlight significant events or anomalies in the packet capture based on the protocols.
-            - Identify source and destination IP addresses
-            - Identify source and destination MAC addresses
-            - Perform MAC OUI lookup and provide the manufacturer of the NIC 
-            - Look for dropped packets; loss; jitter; congestion; errors; or faults and surface these issues to the user
+            **Network Information Hints:**
+            {hp.network_information_prompt}
+            use this to identify the traffic details including specific protocols used. Do not include specific packet details, only high-level traffic information.
+
+            **Provide deeep insight regarding the following points:**
+            - General Overview of the packet capture data
+            - Key observations from the packet capture data
+            - Traffic details including specific protocols use this info and be detailed: {result_traffic}
+            - Notable events: anomalies, potential issues, and performance metrics
+            - Perform MAC OUI lookup and provide the manufacturer of the NIC, using this info from MAC lookup:{mac_mapping}
+                and this {mac_response} from the model regarding the MAC address present in packet_capture_info
     
             Your goal is to provide a clear, concise, and accurate analysis of the packet capture data, leveraging the protocol hints and packet details.
             """
-            with st.spinner("Generating conversational response..."):
-                conversational_response = query_bedrock(conversational_prompt)
+            with st.spinner(f"Generating conversational response with {llm}..."):
+                if llm==st.session_state["models"][1]:
+                    conversational_response = hp.query_groq(conversational_prompt_with_hints)
+                elif llm==st.session_state["models"][0]:
+                    conversational_response = hp.query_openai(conversational_prompt_with_hints)
+            return_info = result_preview
+        else:
+            conversational_prompt_multifile = f"""
+            This is the user's query: {user_query}
+            Here are the pcap files in a dataframe format, each file name is provided with it's contents:{files_description}
 
-            st.markdown("### Conversational Response:")
-            st.write(conversational_response)
+            You are an expert assistant specialized in analyzing packet captures (PCAPs) for troubleshooting and technical analysis. Use the data in the provided packet_capture_info to answer user questions accurately. When a specific application layer protocol is referenced, inspect the packet_capture_info according to these hints. Format your responses in markdown with line breaks, bullet points, and appropriate emojis to enhance readability
+            **Network Information Hints:**
+            {hp.network_information_prompt}
+            
+            ## Think step by step and provide a detailed response to the user's query.
+            - Identify the types of wlan frames (beacon, probe request/response, association request/response, etc.) to understand the WiFi communication flow.
+            - Examined the eapol frames to see if they indicate successful authentication or any errors.
+            - Checked for any patterns or anomalies in the UDP traffic, such as unusual port numbers, high volume of traffic to a specific IP, or communication with known malicious IPs.
 
-        except Exception as e:
-            st.error(f"Error: {e}")
+            ## Use this to identify the following correlation between the pcap files:
+            Focus on Layer 2 Frames: Primarily interested in layer 2 frames for WiFi network analysis, not concerned with payload or layer 3/4 information.
+            Different Network Perspectives: Needs to correlate captures from various parts of the network, such as interactions between APs(access points) and clients.
+            Specific Use Cases:
+            - Multi-Shared Keys with RADIUS Server: Captures involve setups with multi-shared keys and interactions with a RADIUS server.
+            - AP Perspective: Requires captures from the AP’s viewpoint to monitor client interactions.
+            - Data Handling:
+            - Truncated Packets: Interested in only the headers (radio tab), ensuring minimal data beyond layer 2. **ONLY DO THIS IF IT IS EASY, ELSE PLEASE THIS OUT
+            - Efficient Correlation: Ability to correlate different files from multiple perspectives to analyze comprehensive network behavior.
+            - Technical Requirements:
+            - Session Management: Captures include quick interactions, such as AP responses within seconds, leading to session timeouts.
+            - Over-the-Air Communications: Focus on wireless interactions rather than wired.
+
+            DO NOT GIVE ANY INTRODUCTION LIKE AN ESSAY, JUST ANSWER THE QEURY DIRECTLY BASED ON THE INFORMATION PROVIDED
+            """
+            with st.spinner(f"Generating conversational response with {llm}..."):
+                if llm==st.session_state["models"][1]:
+                    conversational_response = hp.query_groq(conversational_prompt_multifile)
+                elif llm==st.session_state["models"][0]:
+                    conversational_response = hp.query_openai(conversational_prompt_multifile)
+            return_info = files_description
+
+        st.session_state["dataframe_json_multifile"] = {}
+        user_query = None
+        return conversational_response, return_info
+    except Exception as e:
+        st.error(f"Error: {e}")
 
 
+def answer_processing(prompt, llm):
+
+    dataframe_list = list(st.session_state["dataframe_json_multifile"].values())
+
+    if len(dataframe_list) == 1:
+        query_code = 'df.describe(include="all")'
+        file_name = list(st.session_state["dataframe_json_multifile"].keys())[0]
+        files_description = f"{file_name} : {dataframe_list[0].head().to_markdown(index=False)}"
+        files_description_2 = eval(query_code, {"df":dataframe_list[0]}).to_markdown(index=False)
+        columns = dataframe_list[0].columns
+
+    else:
+        files_description = ""
+        for key, value in st.session_state["dataframe_json_multifile"].items():
+            df_in_markdown = value.to_markdown(index=False)
+            files_description += f"{key} : {df_in_markdown}\n\n"
+
+    query_expansion_prompt = f"""
+                            given the user query: {prompt} and the pcap file:{files_description}
+                            generate questions that can be asked off that further verbalise the user prompt?
+
+                            ## Simply list a biref set of questions without any explanation or code. Ensure the question is fully framed and clear.
+                            """
+    
+    if llm==st.session_state["models"][1]:
+        query_expansion_response = hp.query_groq(query_expansion_prompt)
+    elif llm==st.session_state["models"][0]:
+        query_expansion_response = hp.query_openai(query_expansion_prompt)
+
+    # Cleaning the questions
+    query_list = query_expansion_response.split("\n")
+    query_list = [q.lstrip("'[]0123456789. ") for q in query_list]
+    question_list = hp.filter_keywords(query_list)
+    print(question_list)
+    embeddings = [hp.get_embedding(i) for i in question_list]
+    #print(cosine_similarity(embeddings))
+
+    # Get top 3 most diverse vectors
+    n_vectors = 3
+    diverse_vectors, indices = hp.get_diverse_vectors(embeddings, n_vectors)
+    question_list = [question_list[i] for i in indices]
+    print(question_list)
+    return question_list, files_description
+
+def compile_answer(questions, files_description, llm):
+    question_answer = ""
+    for question in questions:
+        prompt = f"""
+            This is the user's query: {question}
+            Here are the pcap files in a dataframe format, each file name is provided with it's contents:{files_description}
+
+            You are an expert assistant specialized in analyzing packet captures (PCAPs) for troubleshooting and technical analysis. Use the data in the provided packet_capture_info to answer user questions accurately. When a specific application layer protocol is referenced, inspect the packet_capture_info according to these hints. Format your responses in markdown with line breaks, bullet points, and appropriate emojis to enhance readability
+            **Network Information Hints:**
+            {hp.network_information_prompt}
+
+            ## Keep the response short and to the point. Just answer the query directly based on the information provided and do not provide any introduction, code or explanation.
+            """
+        if llm==st.session_state["models"][1]:
+            query_expansion_response = hp.query_groq(prompt)
+        elif llm==st.session_state["models"][0]:
+            query_expansion_response = hp.query_openai(prompt)
+        question_answer += f"**{question}**:{query_expansion_response}\n\n"
+        print(f"{question}:{query_expansion_response}")
+        print("**************")
+    compiled_prompt = f"""
+            This is the user's query: {question}
+            Here are the pcap files in a dataframe format, each file name is provided with it's contents:{files_description}
+
+            You are an expert assistant specialized in analyzing packet captures (PCAPs) for troubleshooting and technical analysis. Use the data in the provided packet_capture_info to answer user questions accurately.
+            **Network Information Hints:**
+            {hp.network_information_prompt}
+
+            Here are some questions and answers that have already been generated based on the user query and pcap file(s):
+            {question_answer}
+
+            ## Generate a detailed response to the user query based on the information provided in the pcap file(s) and the question answers generated.
+            """
+    if llm==st.session_state["models"][1]:
+        query_expansion_response = hp.query_groq(compiled_prompt)
+    elif llm==st.session_state["models"][0]:
+        query_expansion_response = hp.query_openai(compiled_prompt)
+
+    return query_expansion_response
+
+# Main Application Logic
 def main():
-    st.title("Packet TAG: Table-Augmented Generation for PCAP Analysis")
+    logo = "images/Nanites.svg"
+    # st.logo(logo, size="large")
+    st.image(logo, width=150)
+    st.title("Nanites AI PCAP Copilot!!")
     st.markdown("---")
-    st.subheader("Step 2: Upload and Convert PCAP")
-    upload_and_process_pcap()
+    st.subheader(
+        """Welcome to Nanites AI PCAP Copilot! 🚀 Simply upload one or multiple PCAP files and ask a question about the data."""
+    )
+    st.caption(
+        "Note: All information, including PCAPs, JSON files, and vector stores are neither stored nor retained. Data is deleted during or immediately after each session. Please adhere to your organization’s AI policies and governance protocols before uploading any sensitive materials.",
+        unsafe_allow_html=False,
+        help=None,
+    )
+    st.subheader("Step 1:  Upload and convert one or multiple PCAPs")
+    process_multifile_pcap()
     st.markdown("---")
-    st.subheader("Step 3: Query the Table with LLM Assistance")
-    tag_query_interface()
+    st.subheader("Step 2: View uploaded CSV files")
+    view_csv_file()
+    st.markdown("---")
+    st.subheader("Step 3: Choose the model of choice for the querying")
+    llm = st.selectbox("Choose the model",st.session_state["models"])
+    st.markdown("---")
+    st.subheader("Step 4: Query the file with AI Assistance")
+
+    # Initialize chat history
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    # Display chat messages from history on app rerun
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    # React to user input
+    if prompt := st.chat_input("Ask a question about the PCAP data"):
+        # Display user message in chat message container
+        st.chat_message("user").markdown(prompt)
+        # Add user message to chat history
+        st.session_state.messages.append({"role": "user", "content": prompt})
+
+        #with st.spinner("AI is Processing and compiling a detailed response..."):
+            #questions, files_description = answer_processing(prompt, llm)
+            #response_final=compile_answer(questions, files_description, llm)
+        response_final, meta = tag_query_interface(prompt, llm)
+        # Display assistant response in chat message container
+        with st.chat_message("assistant"):
+            st.markdown(response_final)
+        # Add assistant response to chat history
+        st.session_state.messages.append({"role": "assistant", "content": response_final})
 
 
 if __name__ == "__main__":
