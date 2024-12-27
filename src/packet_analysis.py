@@ -233,7 +233,7 @@ def tag_query_interface(user_query, llm):
             mac_mapping, mac_response = Tools.run_mac(result_preview)
             # Traffic details
             result_traffic = Tools.run_network_matching(result_preview)
-            st.markdown(f"### Traffic Details:{result_traffic}")
+            #st.markdown(f"### Traffic Details:{result_traffic}")
             conversational_prompt_with_hints = f"""
             This is the user's query: {user_query}
             Here are the query results based on the user's question:{result_preview}
@@ -260,33 +260,10 @@ def tag_query_interface(user_query, llm):
                     conversational_response = hp.query_openai(conversational_prompt_with_hints)
             return_info = result_preview
         else:
-            conversational_prompt_multifile = f"""
-            This is the user's query: {user_query}
-            Here are the pcap files in a dataframe format, each file name is provided with it's contents:{files_description}
+            conversational_prompt_multifile = f"""{user_query}
 
-            You are an expert assistant specialized in analyzing packet captures (PCAPs) for troubleshooting and technical analysis. Use the data in the provided packet_capture_info to answer user questions accurately. When a specific application layer protocol is referenced, inspect the packet_capture_info according to these hints. Format your responses in markdown with line breaks, bullet points, and appropriate emojis to enhance readability
-            **Network Information Hints:**
-            {hp.network_information_prompt}
-            
-            ## Think step by step and provide a detailed response to the user's query.
-            - Identify the types of wlan frames (beacon, probe request/response, association request/response, etc.) to understand the WiFi communication flow.
-            - Examined the eapol frames to see if they indicate successful authentication or any errors.
-            - Checked for any patterns or anomalies in the UDP traffic, such as unusual port numbers, high volume of traffic to a specific IP, or communication with known malicious IPs.
+            {files_description}
 
-            ## Use this to identify the following correlation between the pcap files:
-            Focus on Layer 2 Frames: Primarily interested in layer 2 frames for WiFi network analysis, not concerned with payload or layer 3/4 information.
-            Different Network Perspectives: Needs to correlate captures from various parts of the network, such as interactions between APs(access points) and clients.
-            Specific Use Cases:
-            - Multi-Shared Keys with RADIUS Server: Captures involve setups with multi-shared keys and interactions with a RADIUS server.
-            - AP Perspective: Requires captures from the AP’s viewpoint to monitor client interactions.
-            - Data Handling:
-            - Truncated Packets: Interested in only the headers (radio tab), ensuring minimal data beyond layer 2. **ONLY DO THIS IF IT IS EASY, ELSE PLEASE THIS OUT
-            - Efficient Correlation: Ability to correlate different files from multiple perspectives to analyze comprehensive network behavior.
-            - Technical Requirements:
-            - Session Management: Captures include quick interactions, such as AP responses within seconds, leading to session timeouts.
-            - Over-the-Air Communications: Focus on wireless interactions rather than wired.
-
-            DO NOT GIVE ANY INTRODUCTION LIKE AN ESSAY, JUST ANSWER THE QEURY DIRECTLY BASED ON THE INFORMATION PROVIDED
             """
             with st.spinner(f"Generating conversational response with {llm}..."):
                 if llm==st.session_state["models"][1]:
@@ -428,10 +405,10 @@ def main():
         # Add user message to chat history
         st.session_state.messages.append({"role": "user", "content": prompt})
 
-        with st.spinner("AI is Processing and compiling a detailed response..."):
-            questions, files_description = answer_processing(prompt, llm)
-            response_final=compile_answer(questions, files_description, llm)
-        #response, meta = tag_query_interface(prompt, llm)
+        #with st.spinner("AI is Processing and compiling a detailed response..."):
+        #    questions, files_description = answer_processing(prompt, llm)
+        #    response_final=compile_answer(questions, files_description, llm)
+        response_final, meta = tag_query_interface(prompt, llm)
         # Display assistant response in chat message container
         with st.chat_message("assistant"):
             st.markdown(response_final)

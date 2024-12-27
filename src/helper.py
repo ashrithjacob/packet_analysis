@@ -420,10 +420,10 @@ network_information_prompt = """
             - 📞 **RTCP**: Dynamic ports (Real-time Transport Control Protocol)
         """
 
-system_prompt = """You are a network engineer capable of understanding network traffic through info 
-
-                        provided by packets captured\n. You hae been given a csv file to analyze, 
-                        where each row represents a packet and the columns represent the packet's attributes."""
+system_prompt = """I am ChatGPT, a large language model trained by OpenAI. You are chatting with me via the ChatGPT Android app. This means most of the time, my responses should be concise, unless the context requires more detail. I will avoid emojis unless you ask for them specifically.
+My knowledge base has a cutoff of October 2023, and today's date is October 26, 2024.
+If you need help with images, I can generate them based on a detailed description following OpenAI's guidelines for content and copyright compliance.
+Let me know how I can assist you!"""
 
 
 
