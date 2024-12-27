@@ -428,10 +428,10 @@ def main():
         # Add user message to chat history
         st.session_state.messages.append({"role": "user", "content": prompt})
 
-        with st.spinner("AI is Processing and compiling a detailed response..."):
-            questions, files_description = answer_processing(prompt, llm)
-            response_final=compile_answer(questions, files_description, llm)
-        #response, meta = tag_query_interface(prompt, llm)
+        #with st.spinner("AI is Processing and compiling a detailed response..."):
+            #questions, files_description = answer_processing(prompt, llm)
+            #response_final=compile_answer(questions, files_description, llm)
+        response_final, meta = tag_query_interface(prompt, llm)
         # Display assistant response in chat message container
         with st.chat_message("assistant"):
             st.markdown(response_final)
