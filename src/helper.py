@@ -252,7 +252,7 @@ def remove_keywords(text, keywords):
     pattern = re.compile('|'.join(map(re.escape, keywords)))
     return pattern.sub('', text)
 
-def filter_keywords(questions, keywords=["unique", "source", "destination", "different", "total", "average"]) -> list:
+def filter_keywords(questions, keywords=["unique", "different", "total", "average"]) -> list:
     """
     Filter keywords to remove stopwords and other common words.
     
@@ -260,6 +260,7 @@ def filter_keywords(questions, keywords=["unique", "source", "destination", "dif
         """
     a = set([remove_keywords(i, keywords) for i in questions])
     a = list(a)
+    a = [i for i in a if i]
     return a
 
 def get_diverse_vectors(vectors, n_vectors, lambda_param=0.5):

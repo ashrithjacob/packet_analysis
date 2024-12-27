@@ -307,8 +307,10 @@ def answer_processing(prompt, llm):
     dataframe_list = list(st.session_state["dataframe_json_multifile"].values())
 
     if len(dataframe_list) == 1:
+        query_code = 'df.describe(include="all")'
         file_name = list(st.session_state["dataframe_json_multifile"].keys())[0]
-        files_description = f"{file_name} : {dataframe_list[0].to_markdown(index=False)}"
+        files_description = f"{file_name} : {dataframe_list[0].head().to_markdown(index=False)}"
+        files_description_2 = eval(query_code, {"df":dataframe_list[0]}).to_markdown(index=False)
         columns = dataframe_list[0].columns
 
     else:
@@ -318,9 +320,10 @@ def answer_processing(prompt, llm):
             files_description += f"{key} : {df_in_markdown}\n\n"
 
     query_expansion_prompt = f"""
-                            given the user query: {prompt} and the columns in the pcap file:{files_description}
-                            generate queries that can be asked off the data to extract the required information as described in the user query
-                            Just generate the queries and do not provide any explanation or SQL code
+                            given the user query: {prompt} and the pcap file:{files_description}
+                            generate questions that can be asked off that further verbalise the user prompt?
+
+                            ## Simply list a biref set of questions without any explanation or code. Ensure the question is fully framed and clear.
                             """
     
     if llm==st.session_state["models"][1]:
@@ -332,17 +335,19 @@ def answer_processing(prompt, llm):
     query_list = query_expansion_response.split("\n")
     query_list = [q.lstrip("'[]0123456789. ") for q in query_list]
     question_list = hp.filter_keywords(query_list)
-    st.write(question_list)
+    print(question_list)
     embeddings = [hp.get_embedding(i) for i in question_list]
     #print(cosine_similarity(embeddings))
 
     # Get top 3 most diverse vectors
-    n_vectors = 5
+    n_vectors = 3
     diverse_vectors, indices = hp.get_diverse_vectors(embeddings, n_vectors)
     question_list = [question_list[i] for i in indices]
+    print(question_list)
     return question_list, files_description
 
 def compile_answer(questions, files_description, llm):
+    question_answer = ""
     for question in questions:
         prompt = f"""
             This is the user's query: {question}
@@ -352,15 +357,34 @@ def compile_answer(questions, files_description, llm):
             **Network Information Hints:**
             {hp.network_information_prompt}
 
-            ## Keep the response short and to the point
+            ## Keep the response short and to the point. Just answer the query directly based on the information provided and do not provide any introduction, code or explanation.
             """
         if llm==st.session_state["models"][1]:
             query_expansion_response = hp.query_groq(prompt)
         elif llm==st.session_state["models"][0]:
             query_expansion_response = hp.query_openai(prompt)
+        question_answer += f"**{question}**:{query_expansion_response}\n\n"
         print(f"{question}:{query_expansion_response}")
         print("**************")
+    compiled_prompt = f"""
+            This is the user's query: {question}
+            Here are the pcap files in a dataframe format, each file name is provided with it's contents:{files_description}
 
+            You are an expert assistant specialized in analyzing packet captures (PCAPs) for troubleshooting and technical analysis. Use the data in the provided packet_capture_info to answer user questions accurately.
+            **Network Information Hints:**
+            {hp.network_information_prompt}
+
+            Here are some questions and answers that have already been generated based on the user query and pcap file(s):
+            {question_answer}
+
+            ## Generate a detailed response to the user query based on the information provided in the pcap file(s) and the question answers generated.
+            """
+    if llm==st.session_state["models"][1]:
+        query_expansion_response = hp.query_groq(compiled_prompt)
+    elif llm==st.session_state["models"][0]:
+        query_expansion_response = hp.query_openai(compiled_prompt)
+
+    return query_expansion_response
 
 # Main Application Logic
 def main():
@@ -404,14 +428,15 @@ def main():
         # Add user message to chat history
         st.session_state.messages.append({"role": "user", "content": prompt})
 
-        questions, files_description = answer_processing(prompt, llm)
-        response_final = compile_answer(questions, files_description, llm)
+        with st.spinner("AI is Processing and compiling a detailed response..."):
+            questions, files_description = answer_processing(prompt, llm)
+            response_final=compile_answer(questions, files_description, llm)
         #response, meta = tag_query_interface(prompt, llm)
         # Display assistant response in chat message container
         with st.chat_message("assistant"):
             st.markdown(response_final)
         # Add assistant response to chat history
-        st.session_state.messages.append({"role": "assistant", "content": response})
+        st.session_state.messages.append({"role": "assistant", "content": response_final})
 
 
 if __name__ == "__main__":
