@@ -158,7 +158,7 @@ def query_openai(prompt):
     try:
         chat_completion = client_openai.chat.completions.create(
             model="gpt-4o",  # Specify the model
-            temperature=0.0,  # Set the temperature to 0 for deterministic outputs
+            temperature=0.7,  # Set the temperature to 0 for deterministic outputs
             messages=[{"role": "user", "content": prompt}]
         )
         return chat_completion.choices[0].message.content
