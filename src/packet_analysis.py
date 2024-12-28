@@ -108,7 +108,8 @@ def process_multifile_pcap():
         full_df = upload_and_process_pcap(uploaded_file)
         if full_df is not None:
             file_name=uploaded_file.name.split(".")[0]
-            st.session_state["dataframe_json_multifile"][file_name] = full_df.dropna(axis=1, how="any")
+            #st.session_state["dataframe_json_multifile"][file_name] = full_df.dropna(axis=1, how="any")
+            st.session_state["dataframe_json_multifile"][file_name] = full_df
         st.session_state["pcap_dataframe_status"] = True
 
 def upload_and_process_pcap(uploaded_file):
