@@ -28,6 +28,10 @@ bedrock = boto3.client(
     aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY_USER"),
 )
 
+def get_tshark_command(user_prompt: str, pcap_file: str) -> str:
+    prompt = f"tshark -r {pcap_file} -Y radius -T fields -E separator=, -E quote=d -e radius.code -e radius.id -e radius.length -e radius.authenticator -e radius.User_Name -e radius.User_Password_encrypted -e radius.NAS_IP_Address -e radius.NAS_Identifier -e radius.Called_Station_Id -e radius.NAS_Port_Type -e radius.avp.vendor_id -e radius.Unknown_Attribute -e radius.Unknown_Attribute -e radius.Calling_Station_Id -e radius.Connect_Info -e radius.Unknown_Attribute -e radius.avp.vendor_id -e radius.Unknown_Attribute -e radius.avp.vendor_id -e radius.Unknown_Attribute -e radius.Message_Authenticator"
+    return prompt
+
 class PcapToDf:
     def __init__(self, pcap_file):
         self.pcap_file = pcap_file
@@ -40,7 +44,8 @@ class PcapToDf:
         return self.pcap_file.replace(".pcap", ".json")
 
     def pcap_to_json(self):
-        command = f"tshark -nlr {self.pcap_file} -T json > {self.json_path}"
+        command = get_tshark_command("radius", self.pcap_file)
+        #f"tshark -nlr {self.pcap_file} -T json > {self.json_path}"
         '''
         command = f"""tshark -r your_pcap_file.pcapng -T fields \
                     # General Packet Information
