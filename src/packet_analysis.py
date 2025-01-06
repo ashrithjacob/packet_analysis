@@ -124,7 +124,8 @@ def upload_and_process_pcap(uploaded_file):
         os.makedirs(temp_dir, exist_ok=True)
 
         pcap_path = os.path.join(temp_dir, uploaded_file.name)
-        csv_path = pcap_path.replace(".pcap", ".csv")
+        pcap_extention = uploaded_file.name.split(".")[-1]
+        csv_path = pcap_path.replace(pcap_extention, "csv")
 
         with open(pcap_path, "wb") as f:
             f.write(uploaded_file.getvalue())
