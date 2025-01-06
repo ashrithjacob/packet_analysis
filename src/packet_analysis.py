@@ -204,7 +204,7 @@ def view_csv_file():
         st.dataframe(df)
 
 
-def tag_query_interface(user_query, llm):
+def query_interface(user_query, llm):
     """
     Provide an interface to query the processed PCAP table using OpenAI LLM and generate conversational responses.
     """
@@ -215,155 +215,38 @@ def tag_query_interface(user_query, llm):
 
     if len(dataframe_list) == 1:
         df_full = dataframe_list[0]
+        df_in_markdown = df_full.to_markdown(index=False)
+        conversational_prompt = f"""
+            {user_query}
+
+            {df_in_markdown}
+            """
     else:
         files_description = ""
         for key, value in st.session_state["dataframe_json_multifile"].items():
             df_in_markdown = value.to_markdown(index=False)
             files_description += f"{key} : {df_in_markdown}\n\n"
+        conversational_prompt = f"""
+            {user_query}
+
+            {files_description}
+            """
 
 
     if not user_query.strip():
         st.warning("Please enter a question.")
         return
-
     try:
-        if len(list(st.session_state["dataframe_json_multifile"].values())) == 1:
-            query_code = 'df.describe(include="all")'
-            result = eval(query_code, {"df": df_full})
-            result_preview = result.to_markdown(index=False)
-            # MAC ID agent
-            mac_mapping, mac_response = Tools.run_mac(result_preview)
-            # Traffic details
-            result_traffic = Tools.run_network_matching(result_preview)
-            #st.markdown(f"### Traffic Details:{result_traffic}")
-            conversational_prompt_with_hints = f"""
-            This is the user's query: {user_query}
-            Here are the query results based on the user's question:{result_preview}
-
-            You are an expert assistant specialized in analyzing packet captures (PCAPs) for troubleshooting and technical analysis. Use the data in the provided packet_capture_info to answer user questions accurately. When a specific application layer protocol is referenced, inspect the packet_capture_info according to these hints. Format your responses in markdown with line breaks, bullet points, and appropriate emojis to enhance readability
-            **Network Information Hints:**
-            {hp.network_information_prompt}
-            use this to identify the traffic details including specific protocols used. Do not include specific packet details, only high-level traffic information.
-
-            **Provide deeep insight regarding the following points:**
-            - General Overview of the packet capture data
-            - Key observations from the packet capture data
-            - Traffic details including specific protocols use this info and be detailed: {result_traffic}
-            - Notable events: anomalies, potential issues, and performance metrics
-            - Perform MAC OUI lookup and provide the manufacturer of the NIC, using this info from MAC lookup:{mac_mapping}
-                and this {mac_response} from the model regarding the MAC address present in packet_capture_info
-    
-            Your goal is to provide a clear, concise, and accurate analysis of the packet capture data, leveraging the protocol hints and packet details.
-            """
-            with st.spinner(f"Generating conversational response with {llm}..."):
-                if llm==st.session_state["models"][1]:
-                    conversational_response = hp.query_groq(conversational_prompt_with_hints)
-                elif llm==st.session_state["models"][0]:
-                    conversational_response = hp.query_openai(conversational_prompt_with_hints)
-            return_info = result_preview
-        else:
-            conversational_prompt_multifile = f"""{user_query}
-
-            {files_description}
-
-            """
-            with st.spinner(f"Generating conversational response with {llm}..."):
-                if llm==st.session_state["models"][1]:
-                    conversational_response = hp.query_groq(conversational_prompt_multifile)
-                elif llm==st.session_state["models"][0]:
-                    conversational_response = hp.query_openai(conversational_prompt_multifile)
-            return_info = files_description
-
-        st.session_state["dataframe_json_multifile"] = {}
-        user_query = None
-        return conversational_response, return_info
+        with st.spinner(f"Generating conversational response with {llm}..."):
+            if llm==st.session_state["models"][1]:
+                conversational_response = hp.query_groq(conversational_prompt)
+            elif llm==st.session_state["models"][0]:
+                conversational_response = hp.query_openai(conversational_prompt)
+        return conversational_response
     except Exception as e:
         st.error(f"Error: {e}")
 
 
-def answer_processing(prompt, llm):
-
-    dataframe_list = list(st.session_state["dataframe_json_multifile"].values())
-
-    if len(dataframe_list) == 1:
-        query_code = 'df.describe(include="all")'
-        file_name = list(st.session_state["dataframe_json_multifile"].keys())[0]
-        files_description = f"{file_name} : {dataframe_list[0].head().to_markdown(index=False)}"
-        files_description_2 = eval(query_code, {"df":dataframe_list[0]}).to_markdown(index=False)
-        columns = dataframe_list[0].columns
-
-    else:
-        files_description = ""
-        for key, value in st.session_state["dataframe_json_multifile"].items():
-            df_in_markdown = value.to_markdown(index=False)
-            files_description += f"{key} : {df_in_markdown}\n\n"
-
-    query_expansion_prompt = f"""
-                            given the user query: {prompt} and the pcap file:{files_description}
-                            generate questions that can be asked off that further verbalise the user prompt?
-
-                            ## Simply list a biref set of questions without any explanation or code. Ensure the question is fully framed and clear.
-                            """
-    
-    if llm==st.session_state["models"][1]:
-        query_expansion_response = hp.query_groq(query_expansion_prompt)
-    elif llm==st.session_state["models"][0]:
-        query_expansion_response = hp.query_openai(query_expansion_prompt)
-
-    # Cleaning the questions
-    query_list = query_expansion_response.split("\n")
-    query_list = [q.lstrip("'[]0123456789. ") for q in query_list]
-    question_list = hp.filter_keywords(query_list)
-    print(question_list)
-    embeddings = [hp.get_embedding(i) for i in question_list]
-    #print(cosine_similarity(embeddings))
-
-    # Get top 3 most diverse vectors
-    n_vectors = 3
-    diverse_vectors, indices = hp.get_diverse_vectors(embeddings, n_vectors)
-    question_list = [question_list[i] for i in indices]
-    print(question_list)
-    return question_list, files_description
-
-def compile_answer(questions, files_description, llm):
-    question_answer = ""
-    for question in questions:
-        prompt = f"""
-            This is the user's query: {question}
-            Here are the pcap files in a dataframe format, each file name is provided with it's contents:{files_description}
-
-            You are an expert assistant specialized in analyzing packet captures (PCAPs) for troubleshooting and technical analysis. Use the data in the provided packet_capture_info to answer user questions accurately. When a specific application layer protocol is referenced, inspect the packet_capture_info according to these hints. Format your responses in markdown with line breaks, bullet points, and appropriate emojis to enhance readability
-            **Network Information Hints:**
-            {hp.network_information_prompt}
-
-            ## Keep the response short and to the point. Just answer the query directly based on the information provided and do not provide any introduction, code or explanation.
-            """
-        if llm==st.session_state["models"][1]:
-            query_expansion_response = hp.query_groq(prompt)
-        elif llm==st.session_state["models"][0]:
-            query_expansion_response = hp.query_openai(prompt)
-        question_answer += f"**{question}**:{query_expansion_response}\n\n"
-        print(f"{question}:{query_expansion_response}")
-        print("**************")
-    compiled_prompt = f"""
-            This is the user's query: {question}
-            Here are the pcap files in a dataframe format, each file name is provided with it's contents:{files_description}
-
-            You are an expert assistant specialized in analyzing packet captures (PCAPs) for troubleshooting and technical analysis. Use the data in the provided packet_capture_info to answer user questions accurately.
-            **Network Information Hints:**
-            {hp.network_information_prompt}
-
-            Here are some questions and answers that have already been generated based on the user query and pcap file(s):
-            {question_answer}
-
-            ## Generate a detailed response to the user query based on the information provided in the pcap file(s) and the question answers generated.
-            """
-    if llm==st.session_state["models"][1]:
-        query_expansion_response = hp.query_groq(compiled_prompt)
-    elif llm==st.session_state["models"][0]:
-        query_expansion_response = hp.query_openai(compiled_prompt)
-
-    return query_expansion_response
 
 # Main Application Logic
 def main():
@@ -410,7 +293,7 @@ def main():
         #with st.spinner("AI is Processing and compiling a detailed response..."):
         #    questions, files_description = answer_processing(prompt, llm)
         #    response_final=compile_answer(questions, files_description, llm)
-        response_final, meta = tag_query_interface(prompt, llm)
+        response_final = query_interface(prompt, llm)
         # Display assistant response in chat message container
         with st.chat_message("assistant"):
             st.markdown(response_final)
