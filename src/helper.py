@@ -11,7 +11,7 @@ from botocore.exceptions import ClientError
 from openai import OpenAI
 from mac_vendor_lookup import MacLookup
 from dotenv import load_dotenv
-import time 
+import time
 from sklearn.metrics.pairwise import cosine_similarity
 from groq import Groq
 
@@ -28,9 +28,11 @@ bedrock = boto3.client(
     aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY_USER"),
 )
 
+
 def get_tshark_command(user_prompt: str, pcap_file: str, json_file: str) -> str:
     prompt = f"tshark -nlr {pcap_file} -Y radius -T fields -E separator=, -E quote=d -e radius.code -e radius.id -e radius.length -e radius.authenticator -e radius.User_Name -e radius.User_Password_encrypted -e radius.NAS_IP_Address -e radius.NAS_Identifier -e radius.Called_Station_Id -e radius.NAS_Port_Type -e radius.avp.vendor_id -e radius.Unknown_Attribute -e radius.Unknown_Attribute -e radius.Calling_Station_Id -e radius.Connect_Info -e radius.Unknown_Attribute -e radius.avp.vendor_id -e radius.Unknown_Attribute -e radius.avp.vendor_id -e radius.Unknown_Attribute -e radius.Message_Authenticator > {json_file}"
     return prompt
+
 
 class PcapToDf:
     def __init__(self, pcap_file):
@@ -45,7 +47,7 @@ class PcapToDf:
         return self.pcap_file.replace(pcap_extension, "json")
 
     def pcap_to_json(self):
-        #command = get_tshark_command("radius", self.pcap_file, self.json_path)
+        # command = get_tshark_command("radius", self.pcap_file, self.json_path)
         command = f"tshark -nlr '{self.pcap_file}' -T json > '{self.json_path}'"
         '''
         command = f"""tshark -r your_pcap_file.pcapng -T fields \
@@ -164,7 +166,7 @@ def query_openai(prompt):
     try:
         chat_completion = client_openai.chat.completions.create(
             model="gpt-4o",  # Specify the model
-            temperature=0.7,  # Set the temperature to 0 for deterministic outputs
+            temperature=0.0,  # Set the temperature to 0 for deterministic outputs
             messages=[{"role": "user", "content": prompt}]
         )
         return chat_completion.choices[0].message.content
@@ -172,7 +174,7 @@ def query_openai(prompt):
         raise RuntimeError(f"Error querying OpenAI API: {e}")
 
 
-def query_bedrock(prompt,model_id="meta.llama3-1-70b-instruct-v1:0"):
+def query_bedrock(prompt, model_id="meta.llama3-1-70b-instruct-v1:0"):
     max_tokens = 8192
     formatted_prompt = f"""
         <|begin_of_text|>
@@ -183,20 +185,18 @@ def query_bedrock(prompt,model_id="meta.llama3-1-70b-instruct-v1:0"):
         <|eot_id|>
         <|start_header_id|>assistant<|end_header_id|>
         """
-            
+
     native_request = {
         "prompt": formatted_prompt,
         "max_gen_len": max_tokens,
         "temperature": 0.0,
-        }
+    }
     request = json.dumps(native_request)
 
     try:
         # Invoke the model with the request.
         response = bedrock.invoke_model(
-        modelId=model_id,
-        body=request,
-        contentType="application/json"
+            modelId=model_id, body=request, contentType="application/json"
         )
 
         # Decode the response body.
@@ -211,25 +211,24 @@ def query_bedrock(prompt,model_id="meta.llama3-1-70b-instruct-v1:0"):
 def query_groq(query, model_id="llama-3.3-70b-versatile"):
     try:
         chat_completion = client_groq.chat.completions.create(
-        messages=[
-        {
-            "role": "system",
-            "content": system_prompt,
-        },
-        {
-            "role": "user",
-            "content": query,
-        }
-    ],
-
-        # The language model which will generate the completion.
-        model=model_id,
-        temperature=0.0,
-        max_tokens=8192,
-        top_p=1,
-        stop=None,
-        stream=False,
-    )
+            messages=[
+                {
+                    "role": "system",
+                    "content": system_prompt,
+                },
+                {
+                    "role": "user",
+                    "content": query,
+                },
+            ],
+            # The language model which will generate the completion.
+            model=model_id,
+            temperature=0.0,
+            max_tokens=8192,
+            top_p=1,
+            stop=None,
+            stream=False,
+        )
         return chat_completion.choices[0].message.content
     except Exception as e:
         raise RuntimeError(f"Error querying Groq API: {e}")
@@ -245,7 +244,7 @@ def get_detailed_prompt(file_info, title, body):
 
 
 def get_embedding(text, model="text-embedding-3-small"):
-    return client_openai.embeddings.create(input = [text], model=model).data[0].embedding
+    return client_openai.embeddings.create(input=[text], model=model).data[0].embedding
 
 
 def select_best_queries(queries):
@@ -254,80 +253,85 @@ def select_best_queries(queries):
     """
     questions_embedded = [get_embedding(query) for query in queries]
 
-def remove_keywords(text, keywords):
-    pattern = re.compile('|'.join(map(re.escape, keywords)))
-    return pattern.sub('', text)
 
-def filter_keywords(questions, keywords=["unique", "different", "total", "average"]) -> list:
+def remove_keywords(text, keywords):
+    pattern = re.compile("|".join(map(re.escape, keywords)))
+    return pattern.sub("", text)
+
+
+def filter_keywords(
+    questions, keywords=["unique", "different", "total", "average"]
+) -> list:
     """
     Filter keywords to remove stopwords and other common words.
-    
+
     Parameters:
-        """
+    """
     a = set([remove_keywords(i, keywords) for i in questions])
     a = list(a)
     a = [i for i in a if i]
     return a
 
+
 def get_diverse_vectors(vectors, n_vectors, lambda_param=0.5):
     """
     Select the most diverse vectors using Maximal Marginal Relevance.
-    
+
     Parameters:
     vectors: List or array of vectors
     n_vectors: Number of vectors to select
     lambda_param: Trade-off parameter between relevance and diversity (0 to 1)
                  Higher values favor diversity
-    
+
     Returns:
     selected_vectors: Array of selected diverse vectors
     selected_indices: Indices of selected vectors in original list
     """
     # Convert to numpy array if not already
     vectors = np.array(vectors)
-    
+
     # Calculate similarities between all vectors
     similarities = cosine_similarity(vectors)
-    
+
     # Initialize selected and remaining indices
     remaining_indices = set(range(len(vectors)))
     selected_indices = []
-    
+
     # Select first vector (highest average similarity to all others)
     avg_sim = np.mean(similarities, axis=1)
     first_idx = np.argmax(avg_sim)
     selected_indices.append(first_idx)
     remaining_indices.remove(first_idx)
-    
+
     # Select remaining vectors using MMR
     while len(selected_indices) < n_vectors and remaining_indices:
         # Calculate MMR scores for remaining vectors
-        best_score = float('-inf')
+        best_score = float("-inf")
         best_idx = None
-        
+
         for idx in remaining_indices:
             # Calculate relevance (similarity to all vectors)
             relevance = np.mean(similarities[idx])
-            
+
             # Calculate diversity (negative similarity to already selected)
             if selected_indices:
                 diversity = -np.max(similarities[idx, selected_indices])
             else:
                 diversity = 0
-                
+
             # Calculate MMR score
             score = lambda_param * relevance + (1 - lambda_param) * diversity
-            
+
             if score > best_score:
                 best_score = score
                 best_idx = idx
-        
+
         selected_indices.append(best_idx)
         remaining_indices.remove(best_idx)
-    
+
     # Get selected vectors
     selected_vectors = vectors[selected_indices]
-    
+
     return selected_vectors, selected_indices
 
 
@@ -430,11 +434,6 @@ system_prompt = """I am ChatGPT, a large language model trained by OpenAI. You a
 My knowledge base has a cutoff of October 2023, and today's date is October 26, 2024.
 If you need help with images, I can generate them based on a detailed description following OpenAI's guidelines for content and copyright compliance.
 Let me know how I can assist you!"""
-
-
-
-
-
 
 
 """
