@@ -7,7 +7,19 @@ from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
 import seaborn as sns
+import dspy
 from sklearn.metrics.pairwise import cosine_similarity
+from dotenv import load_dotenv
+
+load_dotenv()
+
+def dspy_run():
+    lm = dspy.LM('openai/gpt-4o', api_key=os.getenv("OPENAI_API_KEY"))
+    dspy.configure(lm=lm)
+    math = dspy.ChainOfThought("question -> answer: float")
+    out = math(question="How many 'r's in `raspberry`?")
+    print(out)
+
 
 def plot_high_dim_data(data, method='tsne', perplexity=30, learning_rate='auto', title=None, labels=None):
     """
@@ -178,7 +190,7 @@ if __name__ == "__main__":
                 'What are the different types of IP protocols used in the data?',
                 'What are the unique BGP message types in the data?',
                 'What are the unique TCP window sizes in the data?']
-    
+    '''
     numbers_filtered = filter_keywords(numbers)
     print(numbers_filtered)
     
@@ -193,4 +205,6 @@ if __name__ == "__main__":
     print("Diverse Questions:")
     for i in indices:
         print(numbers_filtered[i])
+    '''
+    dspy_run()
     
