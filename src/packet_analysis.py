@@ -6,6 +6,7 @@ import re
 import boto3
 import anthropic
 import json
+import dspy
 import helper as hp
 from botocore.exceptions import ClientError
 from openai import OpenAI
@@ -204,6 +205,15 @@ def view_csv_file():
         st.dataframe(df)
 
 
+def reasoning_logic(lm, context, user_query):
+    dspy.configure(lm=lm)
+    respond = dspy.ChainOfThought('context, question -> answer')
+    result = respond(context=context, question=user_query)
+    # Print the history of prompts
+    #dspy.inspect_history(n=5)
+    return result
+
+
 def query_interface(user_query, llm):
     """
     Provide an interface to query the processed PCAP table using OpenAI LLM and generate conversational responses.
@@ -215,23 +225,12 @@ def query_interface(user_query, llm):
 
     if len(dataframe_list) == 1:
         df_full = dataframe_list[0]
-        df_in_markdown = df_full.to_markdown(index=False)
-        conversational_prompt = f"""
-            {user_query}
-
-            {df_in_markdown}
-            """
+        context = df_full.to_markdown(index=False)
     else:
-        files_description = ""
+        context = ""
         for key, value in st.session_state["dataframe_json_multifile"].items():
             df_in_markdown = value.to_markdown(index=False)
-            files_description += f"{key} : {df_in_markdown}\n\n"
-        conversational_prompt = f"""
-            {user_query}
-
-            {files_description}
-            """
-
+            context += f"{key} : {df_in_markdown}\n\n"
 
     if not user_query.strip():
         st.warning("Please enter a question.")
@@ -239,10 +238,11 @@ def query_interface(user_query, llm):
     try:
         with st.spinner(f"Generating conversational response with {llm}..."):
             if llm==st.session_state["models"][1]:
-                conversational_response = hp.query_groq(conversational_prompt)
+                lm = dspy.LM('openai/llama-3.3-70b-versatile', api_key=os.getenv("GROQ_API_KEY"), api_base='https://api.groq.com/openai/v1')
             elif llm==st.session_state["models"][0]:
-                conversational_response = hp.query_openai(conversational_prompt)
-        return conversational_response
+                lm = dspy.LM('openai/gpt-4o', api_key=os.getenv("OPENAI_API_KEY"))
+            result =reasoning_logic(lm=lm, context=context, user_query=user_query)
+        return result.reasoning, result.answer
     except Exception as e:
         st.error(f"Error: {e}")
 
@@ -293,12 +293,15 @@ def main():
         #with st.spinner("AI is Processing and compiling a detailed response..."):
         #    questions, files_description = answer_processing(prompt, llm)
         #    response_final=compile_answer(questions, files_description, llm)
-        response_final = query_interface(prompt, llm)
+        response_reasoning, response_answer = query_interface(prompt, llm)
         # Display assistant response in chat message container
         with st.chat_message("assistant"):
-            st.markdown(response_final)
+            st.subheader("Reasoning:")
+            st.markdown(response_reasoning)
+            st.subheader("Answer:")
+            st.markdown(response_answer)
         # Add assistant response to chat history
-        st.session_state.messages.append({"role": "assistant", "content": response_final})
+        st.session_state.messages.append({"role": "assistant", "content": response_answer})
 
 
 if __name__ == "__main__":
