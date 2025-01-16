@@ -31,27 +31,8 @@ bedrock = boto3.client(
 
 def get_tshark_command(user_prompt: str, pcap_file: str, json_file: str) -> str:
     prompt = f"tshark -nlr {pcap_file} -Y radius -T fields -E separator=, -E quote=d -e radius.code -e radius.id -e radius.length -e radius.authenticator -e radius.User_Name -e radius.User_Password_encrypted -e radius.NAS_IP_Address -e radius.NAS_Identifier -e radius.Called_Station_Id -e radius.NAS_Port_Type -e radius.avp.vendor_id -e radius.Unknown_Attribute -e radius.Unknown_Attribute -e radius.Calling_Station_Id -e radius.Connect_Info -e radius.Unknown_Attribute -e radius.avp.vendor_id -e radius.Unknown_Attribute -e radius.avp.vendor_id -e radius.Unknown_Attribute -e radius.Message_Authenticator > {json_file}"
-    return prompt
-
-
-class PcapToDf:
-    def __init__(self, pcap_file):
-        self.pcap_file = pcap_file
-        self.row = []
-        self.df = pd.DataFrame()
-        self.json_path = self.create_json()
-        self.pcap_to_json()
-
-    def create_json(self):
-        pcap_extension = self.pcap_file.split(".")[-1]
-        return self.pcap_file.replace(pcap_extension, "json")
-
-    def pcap_to_json(self):
-        # command = get_tshark_command("radius", self.pcap_file, self.json_path)
-        command = f"tshark -nlr '{self.pcap_file}' -T json > '{self.json_path}'"
-        '''
-        command = f"""tshark -r your_pcap_file.pcapng -T fields \
-                    # General Packet Information
+    command = f"""tshark -r your_pcap_file.pcapng -T fields \
+            # General Packet Information
             -e frame.number \
             -e frame.time_relative \
             -e frame.len \
@@ -123,7 +104,24 @@ class PcapToDf:
 
             # Expert Information
             -e _ws.expert.message """
-        '''
+    return prompt
+
+
+class PcapToDf:
+    def __init__(self, pcap_file):
+        self.pcap_file = pcap_file
+        self.row = []
+        self.df = pd.DataFrame()
+        self.json_path = self.create_json()
+        self.pcap_to_json()
+
+    def create_json(self):
+        pcap_extension = self.pcap_file.split(".")[-1]
+        return self.pcap_file.replace(pcap_extension, "json")
+
+    def pcap_to_json(self):
+        # command = get_tshark_command("radius", self.pcap_file, self.json_path)
+        command = f"tshark -nlr '{self.pcap_file}' -T json > '{self.json_path}'"
         subprocess.run(command, shell=True)
 
     def extract_vals_from_dict(self, my_dict):
@@ -232,108 +230,6 @@ def query_groq(query, model_id="llama-3.3-70b-versatile"):
         return chat_completion.choices[0].message.content
     except Exception as e:
         raise RuntimeError(f"Error querying Groq API: {e}")
-
-
-def get_detailed_prompt(file_info, title, body):
-    detailed_prompt = f"""
-        - 📄 **packet network data**:{file_info}
-        - 📚 **from the above Instructions**: 
-                Provide detailed insights based on the data with regards to {title} and expound further on {body}.
-        """
-    return detailed_prompt
-
-
-def get_embedding(text, model="text-embedding-3-small"):
-    return client_openai.embeddings.create(input=[text], model=model).data[0].embedding
-
-
-def select_best_queries(queries):
-    """
-    Select the best queries from a list of queries.
-    """
-    questions_embedded = [get_embedding(query) for query in queries]
-
-
-def remove_keywords(text, keywords):
-    pattern = re.compile("|".join(map(re.escape, keywords)))
-    return pattern.sub("", text)
-
-
-def filter_keywords(
-    questions, keywords=["unique", "different", "total", "average"]
-) -> list:
-    """
-    Filter keywords to remove stopwords and other common words.
-
-    Parameters:
-    """
-    a = set([remove_keywords(i, keywords) for i in questions])
-    a = list(a)
-    a = [i for i in a if i]
-    return a
-
-
-def get_diverse_vectors(vectors, n_vectors, lambda_param=0.5):
-    """
-    Select the most diverse vectors using Maximal Marginal Relevance.
-
-    Parameters:
-    vectors: List or array of vectors
-    n_vectors: Number of vectors to select
-    lambda_param: Trade-off parameter between relevance and diversity (0 to 1)
-                 Higher values favor diversity
-
-    Returns:
-    selected_vectors: Array of selected diverse vectors
-    selected_indices: Indices of selected vectors in original list
-    """
-    # Convert to numpy array if not already
-    vectors = np.array(vectors)
-
-    # Calculate similarities between all vectors
-    similarities = cosine_similarity(vectors)
-
-    # Initialize selected and remaining indices
-    remaining_indices = set(range(len(vectors)))
-    selected_indices = []
-
-    # Select first vector (highest average similarity to all others)
-    avg_sim = np.mean(similarities, axis=1)
-    first_idx = np.argmax(avg_sim)
-    selected_indices.append(first_idx)
-    remaining_indices.remove(first_idx)
-
-    # Select remaining vectors using MMR
-    while len(selected_indices) < n_vectors and remaining_indices:
-        # Calculate MMR scores for remaining vectors
-        best_score = float("-inf")
-        best_idx = None
-
-        for idx in remaining_indices:
-            # Calculate relevance (similarity to all vectors)
-            relevance = np.mean(similarities[idx])
-
-            # Calculate diversity (negative similarity to already selected)
-            if selected_indices:
-                diversity = -np.max(similarities[idx, selected_indices])
-            else:
-                diversity = 0
-
-            # Calculate MMR score
-            score = lambda_param * relevance + (1 - lambda_param) * diversity
-
-            if score > best_score:
-                best_score = score
-                best_idx = idx
-
-        selected_indices.append(best_idx)
-        remaining_indices.remove(best_idx)
-
-    # Get selected vectors
-    selected_vectors = vectors[selected_indices]
-
-    return selected_vectors, selected_indices
-
 
 network_information_prompt = """
             - 🌐 **HTTP**: `tcp.port == 80`

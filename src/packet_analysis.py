@@ -80,22 +80,6 @@ def load_csv_as_dataframe(csv_path):
     return pd.read_csv(csv_path)
 
 
-def generate_query_prompt(schema, query):
-    """
-    Generate a prompt to translate a user question into a structured query.
-    """
-    return f"""
-    The table schema is as follows:
-    {schema}
-
-    The table is stored in a variable named `df`.
-
-    Convert the following question into a Pandas DataFrame query:
-    Question: {query}
-
-    Provide the query code only. Do not include explanations.
-    """
-
 def clean_query(query):
     if "```" in query:
         cleaned_text = re.sub(r"^```\w*\s*|\s*```$", "", query).strip()
@@ -118,7 +102,7 @@ def upload_and_process_pcap(uploaded_file):
     if uploaded_file:
         st.write(f"Processing uploaded PCAP file...{uploaded_file.name}")
         if uploaded_file.size > MAX_FILE_SIZE_MB * 1024 * 1024:
-            st.error(f"The file exceeds the maximum size of {MAX_FILE_SIZE_MB} MB.")
+            st.message(f"The file exceeds the maximum size of {MAX_FILE_SIZE_MB} MB. System might be very slow.")
             return
 
         temp_dir = "temp"
@@ -142,60 +126,6 @@ def upload_and_process_pcap(uploaded_file):
             if os.path.exists(csv_path):
                 os.remove(csv_path)
             return full_df
-
-
-class Tools:
-    def agent_prompt(prompt):
-        """
-        Prompt the agent with a question and return the response.
-        """
-        response = hp.query_groq(prompt)
-        return response
-
-    def filter_json(str_data):
-        if "```" in str_data:
-            code_blocks = re.findall(r"```(?:.*?\n)?(.*?)```", str_data, re.DOTALL)
-            code_blocks = code_blocks[0]
-        else:
-            code_blocks = re.findall(r"{(.*?)}", str_data, re.DOTALL)
-            code_blocks = "{" + code_blocks[0] + "}"
-        print("STR", str_data)
-        print("Code Blocks1:", code_blocks)
-        return json.loads(code_blocks)
-
-    def mac_vendor_lookup(json_data):
-        """
-        Lookup the vendor information for a given MAC address.
-        """
-        dict_lookup = {}
-        for key, val in json_data.items():
-            vendor = MacLookup().lookup(val)
-            dict_lookup[val] = vendor
-        return dict_lookup
-
-    def run_mac(result_preview):
-        try:
-            prompt = f"""
-                    From these query results:{result_preview}
-                    identify the MAC address of the source and destination IP addresses and return all mac addresses as json
-                    IMPORTANT: respond in the format ``` {{"column_name_1": "mac_address", "column_name_2": "mac_address"}} ```
-                    """
-            response = Tools.agent_prompt(prompt)
-            json_data = Tools.filter_json(response)
-            lookup = Tools.mac_vendor_lookup(json_data)
-            return str(lookup), str(response)
-        except Exception as e:
-            return str(e), str(e)
-
-    def run_network_matching(result_preview):
-        prompt = f"""
-                From these query results:{result_preview}
-                and these network information hints:{hp.network_information_prompt}, identify the protocols used with source and destination IP addresses.
-                DO NOT include specific packet details or repeat the network information hints
-                """
-        response = Tools.agent_prompt(prompt)
-        return response
-
 
 def view_csv_file():
     dataframe_list = list(st.session_state["dataframe_json_multifile"].values())
@@ -290,9 +220,6 @@ def main():
         # Add user message to chat history
         st.session_state.messages.append({"role": "user", "content": prompt})
 
-        #with st.spinner("AI is Processing and compiling a detailed response..."):
-        #    questions, files_description = answer_processing(prompt, llm)
-        #    response_final=compile_answer(questions, files_description, llm)
         response_reasoning, response_answer = query_interface(prompt, llm)
         # Display assistant response in chat message container
         with st.chat_message("assistant"):
