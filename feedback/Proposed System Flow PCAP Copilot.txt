@@ -1,0 +1,59 @@
+Proposed Enhanced Flow
+
+1. File Upload:
+-User uploads PCAP(s) via Streamlit.
+-The system confirms file receipt.
+
+2. Query Definition:
+-The system asks the user what they want to analyze.
+-Based on the query, the LLM generates Tshark commands dynamically.
+
+3. Initial Analysis:
+-Tshark processes the PCAP(s) according to the generated commands.
+-Extracted data is converted into a CSV (or Pandas DataFrame) for analysis.
+
+4. Analysis and Presentation:
+-The system uses the LLM to perform protocol-specific or general analysis on the extracted data.
+-Results are presented in Markdown format using tables, bullet points, or flowcharts.
+
+5. Follow-Up Handling:
+-If the user has follow-up questions:
+	-If related to existing data: LLM uses already extracted CSV/structured data for further analysis.
+	-If new data is required: LLM generates new Tshark commands to extract additional fields.
+-Repeat analysis and present findings dynamically.
+
+6. Iterative Refinement:
+-The system continues to refine Tshark commands, data extraction, and analysis based on user inputs.
+
+
+Flow Diagram
+
+User Uploads PCAP(s) via Streamlit
+              ↓
+    System Confirms Upload
+              ↓
+Ask User: "What would you like to analyze?"
+              ↓
+Streamlit -> User Query -> LLM 
+              ↓
+LLM Generates Tshark Commands
+              ↓
+          Execute Tshark
+              ↓
+   Extract Data to CSV/Structured Format
+              ↓
+Streamlit Presents Initial Analysis
+              ↓
+    User Follow-Up Query (Optional)
+              ↓
+If Existing Data Covers Query:
+   LLM -> Existing Data -> Analysis -> Streamlit -> User
+              ↓
+If New Data Needed:
+   LLM Generates New Tshark Commands
+       ↓                       ↓
+   Tshark Execution       Reprocess PCAP(s)
+              ↓
+       Extract New Data
+              ↓
+     Streamlit Presents Updated Analysis

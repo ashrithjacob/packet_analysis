@@ -1,8 +1,4 @@
 .env
 __pycache__
 *.pyc
-pcap_store/
 temp/
-images/
-feedback/
-csv/

@@ -1,0 +1,143 @@
+EAP Question List for identifying handshake steps, validating ciphers, checking replay counters, spotting anomalies, flag handshake failures, detect insecure ciphers, and highlighting devices that aren’t following the standard handshake flow.
+
+
+1. Which Cipher Suites and AKM Are in Use?
+Question
+    “What cipher suites (unicast/group) and Auth Key Management (AKM) does the RSN IE list?”
+
+Answer (Inferred Logic)
+    Parse the RSN IE (in the WPA Key Data).
+    Identify:
+        Group Cipher (e.g., AES-CCMP or TKIP).
+        Pairwise Cipher (AES-CCMP or TKIP).
+        AKM (e.g., PSK, 802.1X, SAE).
+    Return each suite (OUI + type) in human-readable form.
+
+Use Case
+    Security Compliance: Ensure only AES-CCMP and PSK or 802.1X are used (no legacy TKIP).
+    Configuration Check: Validate that the actual handshake cipher matches expected AP config.
+
+2. Is This a Pairwise or Group Key Exchange?
+Question
+    “Does the EAPOL-Key indicate a Pairwise Key or a Group Key handshake?”
+
+Answer (Inferred Logic)
+    Inspect the Key Type bit in the Key Information field:
+        If Key Type = 1 → Pairwise Key.
+        If Key Type = 0 → Group Key (GTK handshake).
+
+Use Case
+    Roaming & Handshake Debug: Distinguish the 4-Way Handshake (pairwise) from the 2-message Group Key renewal.
+    Key Rotation Analysis: Identify when periodic Group Key updates occur (e.g., every X minutes).
+
+3. Which Message of the 4-Way Handshake Is This?
+Question
+    “Is this EAPOL-Key frame #1, #2, #3, or #4 of the WPA2 4-Way Handshake?”
+
+Answer (Inferred Logic)
+    Look at Key ACK, Key MIC, Install, and Secure bits:
+        Message #1 (AP→STA): Key ACK=1, Key MIC=0, Install=0, Secure=0
+        Message #2 (STA→AP): Key ACK=0, Key MIC=1, Install=0, Secure=0
+        Message #3 (AP→STA): Key ACK=1, Key MIC=1, Install=1, Secure=1
+        Message #4 (STA→AP): Key ACK=0, Key MIC=1, Install=0, Secure=1
+    Return which message number is inferred.
+
+Use Case
+    Handshake Progress Tracking: If handshake fails, you can see exactly which message was missing or invalid.
+    Real-Time Troubleshooting: Identify if a station never sends message #2 or if the AP’s message #3 times out.
+
+4. Is the Replay Counter Incrementing Properly?
+Question
+    “For this EAPOL-Key, does the Replay Counter increase compared to the previous message in this handshake session?”
+
+Answer (Inferred Logic)
+    Keep track of the last seen Replay Counter for each station+AP pair.
+    Compare the current frame’s Replay Counter:
+        Must be strictly greater than last time for this handshake sequence.
+    Return a boolean or a numeric difference.
+
+Use Case
+    Preventing Replay Attacks: If the same counter reappears or fails to increment, it may indicate a KRACK-like attempt or a device bug.
+    Handshake Diagnostics: Identify handshake re-transmissions or stuck counters.
+
+5. What RSN Capabilities Does This Network/Station Announce?
+Question
+    “Which RSN Capabilities bits are set (e.g., Pre-Auth, Management Frame Protection, replay counter count)?”
+
+Answer (Inferred Logic)
+    Parse the RSN Capabilities field in the RSN IE (16 bits).
+    Return whether:
+        Pre-Auth is supported,
+        MFP capable/required,
+        Number of replay counters (1/2/4/16) for unicast/group, etc.
+
+Use Case
+    Security Posture: Confirm if the device supports Management Frame Protection (802.11w).
+    Compatibility: If a device expects multiple replay counters but the AP only supports 1, could cause issues.
+    Detailed Network Inventory: A big environment can log which clients are MFP-capable or not.
+
+6. Are EAPOL-Key Messages Following the Correct Timing?
+Question
+    “How long is the delay between each handshake message? Is it within normal thresholds (e.g., < 1s)?”
+
+Answer (Inferred Logic)
+    Record timestamp for each EAPOL-Key message.
+    Subtract timestamps:
+        If message #2 arrives more than a certain threshold after #1, or #3 after #2, etc., highlight potential timeouts.
+    Possibly classify as normal or delayed.
+
+Use Case
+    Performance Monitoring: Large EAPOL delays can indicate a congested channel or a station driver bug.
+    Roaming: Quick message exchanges are crucial for seamless roaming (especially for VoIP).
+
+7. Are Key Descriptors Using AES-128-CMAC or HMAC-SHA1?
+Question
+    “Which ‘Key Descriptor Version’ is used? (Type1 = RC4/HMAC-MD5, Type2 = AES/HMAC-SHA1, Type3 = AES-128-CMAC)”
+
+Answer (Inferred Logic)
+    From the Key Information bits, decode the “Key Descriptor Version” sub-field:
+        1 → RC4/HMAC-MD5,
+        2 → AES/HMAC-SHA1,
+        3 → AES-128-CMAC.
+    Return the numeric code and friendly name.
+
+Use Case
+    WPA2 vs. WPA3: In some WPA3 transitions, you might see Type3 (AES-CMAC).
+    Legacy Detection: If Type1 is found, it might be older WPA or TKIP usage.
+
+8. Are the Nonces and MIC Fields Valid?
+Question
+    “Does this EAPOL-Key contain an SNonce or ANonce, and is the Key MIC field consistent with the computed PTK?”
+
+Answer (Inferred Logic)
+    For advanced validation: if you have the PSK, you can attempt to recompute the Key MIC to confirm correctness.
+    For simpler checks: just note presence of ANonce in message #1 or SNonce in message #2, and Key MIC is set in messages #2–4.
+
+Use Case
+    Attack/Integrity Check: Tools that do full handshake validation can confirm no tampering is present.
+    Debug: If Key MIC fails, the handshake is likely to break, pointing to a passphrase mismatch or encryption bug.
+
+9. Did This Handshake Indicate an Error or Request Bit?
+Question
+    “Do we see ‘Error’ or ‘Request’ bits set in Key Information? If so, what does that mean?”
+
+Answer (Inferred Logic)
+    Inspect Error (bit10) and Request (bit11) in the Key Information:
+        If Error=1, it’s some EAPOL-Key error scenario.
+        If Request=1, the AP/station is requesting something unusual, often for diagnostic or WPS flows.
+
+Use Case
+    Rare Issue Diagnosis: Might point to a special or corner case handshake failure.
+    WPS/Other: Some WPS setups set certain bits; analyzing them is key to debugging WPS connectivity.
+
+10. Are These Frames Part of a Group Key Renewal?
+Question
+    “Does the AP broadcast or unicast a frame with Key Type=0 and certain Key ACK/Install bits set, and then see a station’s ACK with no key data?”
+
+Answer (Inferred Logic)
+    If Key Type=0 and you see only 2 EAPOL messages (AP→STA, then STA→AP), it’s typically the group key handshake.
+    The first message includes the new GTK, the second is an acknowledgment with Key MIC but no key data.
+
+Use Case
+    Periodic Group Key Rotation: Confirm it’s happening at the correct interval.
+    Security Check: If group rekeys never appear, the AP might not be rotating the GTK as configured.
