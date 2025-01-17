@@ -142,8 +142,7 @@ def reasoning_logic(lm, context, user_query):
     #dspy.inspect_history(n=5)
     return result
 
-
-def query_interface(user_query, llm):
+def context_enricher(user_query):
     """
     Provide an interface to query the processed PCAP table using OpenAI LLM and generate conversational responses.
     """
@@ -161,6 +160,12 @@ def query_interface(user_query, llm):
             df_in_markdown = value.to_markdown(index=False)
             context += f"{key} : {df_in_markdown}\n\n"
 
+    context += f"\n\n {hp.network_information_prompt}"
+    return context
+
+
+def query_interface(user_query, llm):
+    context = context_enricher(user_query)
     if not user_query.strip():
         st.warning("Please enter a question.")
         return

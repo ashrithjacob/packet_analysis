@@ -232,6 +232,7 @@ def query_groq(query, model_id="llama-3.3-70b-versatile"):
         raise RuntimeError(f"Error querying Groq API: {e}")
 
 network_information_prompt = """
+            Some network related data:
             - 🌐 **HTTP**: `tcp.port == 80`
             - 🔐 **HTTPS**: `tcp.port == 443`
             - 🛠 **SNMP**: `udp.port == 161` or `udp.port == 162`
