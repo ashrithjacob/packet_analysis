@@ -31,7 +31,13 @@ RUN echo "==> Install more pip packages..." \
     && pip install --break-system-packages -U --quiet openai==1.57.2\
     && pip install --break-system-packages -U --quiet mac-vendor-lookup==0.1.12\
     && pip install --break-system-packages -U --quiet scikit-learn==1.6.0\
-    && pip install --break-system-packages -U --quiet dspy==2.5.43
+    && pip install --break-system-packages -U --quiet dspy==2.5.43\
+    && pip install --break-system-packages -U --quiet langchain-community==0.3.14\
+    && pip install --break-system-packages -U --quiet langchain-experimental==0.3.4\
+    && pip install --break-system-packages -U --quiet langchain-openai==0.3.0\
+    && pip install --break-system-packages -U --quiet langchain-text-splitters==0.3.5\
+    && pip install --break-system-packages -U --quiet jq==1.8.0\
+    && pip install --break-system-packages -U --quiet chromadb==0.6.3
 
 
 # Install tshark
