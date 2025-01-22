@@ -5,6 +5,9 @@ import subprocess
 import numpy as np
 import dspy
 import uuid
+import shutil
+import ast
+
 # import helper as hp
 import pandas as pd
 from pathlib import Path
@@ -12,9 +15,26 @@ from langchain_community.vectorstores import Chroma
 from langchain_community.document_loaders import JSONLoader
 from langchain_experimental.text_splitter import SemanticChunker
 from langchain_openai import OpenAIEmbeddings
+from langchain_core.tools import tool
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+@st.cache_resource
+def load_model():
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        st.error("OpenAI API Key is missing. Please set it in the .env file.")
+        return None
+    try:
+        with st.spinner("Loading OpenAI Embeddings..."):
+            embedding_model = OpenAIEmbeddings(api_key=api_key)
+        return embedding_model
+    except Exception as e:
+        st.error(f"Error loading model: {e}")
+        return None
+
 
 class Frontend:
     def page_intro(logo="images/Nanites.svg"):
@@ -43,14 +63,46 @@ class Frontend:
 
     def view_csv_file(files):
         for file in files:
-            file_name_json = file["json_path"]
-            file_name_csv = Path(file_name_json).stem + ".csv"
-            df = Parser.json_to_df(file_name_json)
+            file_name_csv = Path(file).stem + ".csv"
+            df = Parser.json_to_df(file)
             st.markdown(f"*{file_name_csv}*")
             st.dataframe(df)
 
 
 class Backend:
+    @classmethod
+    def _get_pcaps_path(cls, base_path, uploaded_file):
+        next_run_folder = cls._get_next_run_folder(base_path)
+        subfolder = os.path.join(cls.temp_dir, next_run_folder)
+        os.makedirs(
+            subfolder, exist_ok=True
+        )  # Create the subfolder if it doesn't exist
+        pcap_path = os.path.join(cls.temp_dir, subfolder, uploaded_file.name)
+        return pcap_path
+
+    def _get_next_run_folder(base_path):
+        # Convert to Path object if string is provided
+        path = Path(base_path)
+
+        # Initialize max run number
+        max_run = 0
+
+        # Check if path exists
+        if path.exists():
+            # Look through all folders
+            for folder in path.iterdir():
+                if folder.is_dir() and folder.name.startswith("run_"):
+                    try:
+                        # Extract number from folder name
+                        run_num = int(folder.name.split("_")[1])
+                        max_run = max(max_run, run_num)
+                    except (ValueError, IndexError):
+                        # Skip folders that don't match the pattern
+                        continue
+
+        # Return the next run folder name
+        return f"run_{max_run + 1}"
+
     def _check_max_size_limit(uploaded_file, max_pcap_size_mb=1):
         if uploaded_file:
             st.write(f"Processing uploaded PCAP file...{uploaded_file.name}")
@@ -68,8 +120,8 @@ class Backend:
         os.makedirs(cls.temp_dir, exist_ok=True)
 
     @classmethod
-    def _get_json_path(cls, uploaded_file):
-        pcap_path = os.path.join(cls.temp_dir, uploaded_file.name)
+    def _get_run_path(cls, uploaded_file):
+        pcap_path = cls._get_pcaps_path(cls.temp_dir, uploaded_file)
         pcap_extention = uploaded_file.name.split(".")[-1]
         json_path = pcap_path.replace(pcap_extention, "json")
         print("json_path", json_path)
@@ -79,7 +131,7 @@ class Backend:
     def upload_and_process_pcap(cls, uploaded_file):
         if cls._check_max_size_limit(uploaded_file):
             cls._create_temp_dir(dir_name="temp")
-            paths = cls._get_json_path(uploaded_file)
+            paths = cls._get_run_path(uploaded_file)
 
             # Write the uploaded pcap file to the temp directory
             with open(paths["pcap_path"], "wb") as f:
@@ -165,59 +217,45 @@ class JsonToDf:
         return self.df
 
 
-@st.cache_resource
-def load_model():
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        st.error("OpenAI API Key is missing. Please set it in the .env file.")
-        return None
-    try:
-        with st.spinner("Loading OpenAI Embeddings..."):
-            embedding_model = OpenAIEmbeddings(api_key=api_key)
-        return embedding_model
-    except Exception as e:
-        st.error(f"Error loading model: {e}")
-        return None
-
-
-# Function to generate priming text based on pcap data
-
-
-class ChatWithPCAP:
-    def __init__(self, json_path, models):
+class StorePCAP:
+    def __init__(self, json_paths, models):
         self.priming_text = st.session_state.get("priming_text", "")
         self.models = models
         self.embedding_model = load_model()
-        self.chroma_store = self._make_chroma_store()
+        self.chroma_store = self._refresh_chroma_store()
+        self.json_paths = json_paths
         self.pages = None
         self.docs = None
         self.vectordb = None
         self.memory = None
         self.llm_chains = None
+        self.vectordb_dict = {}
         self.conversation_history = []
 
         # Load and process the JSON file
-       # for json_file in json_paths:
-        self.json_path = json_path
-        self.load_json()
-        self.split_into_chunks()
-        self.store_in_chroma()
+        # for json_file in json_paths:
+        for json_path in self.json_paths:
+            file_name = Path(json_path).stem
+            self.json_path = json_path
+            self.load_json()
+            self.split_into_chunks()
+            self.store_in_chroma(file_name=file_name)
         # self.setup_conversation_memory()
         # self.initialize_llm_chains()
 
-    def _make_chroma_store(self):
+    def _refresh_chroma_store(self):
         chroma_store = Path(__file__).parent / "chroma_store"
         os.makedirs(chroma_store, exist_ok=True)
+        for item in os.listdir(chroma_store):
+            item_path = os.path.join(chroma_store, item)
+            try:
+                if os.path.isfile(item_path) or os.path.islink(item_path):
+                    os.unlink(item_path)
+                elif os.path.isdir(item_path):
+                    shutil.rmtree(item_path)
+            except Exception as e:
+                print(f"Failed to delete {item_path}. Reason: {e}")
         return chroma_store
-
-
-    def _get_system_text(self, pcap_data: str) -> str:
-        PACKET_WHISPERER = f"""
-        You are an expert assistant specialized in analyzing packet captures (PCAPs) for troubleshooting and technical analysis. Use the data in the provided to answer user questions accurately.
-
-        Your goal is to provide a clear, concise, and accurate analysis of the packet capture data, leveraging the packet details from the uploaded .pcap JSON.
-        """
-        return PACKET_WHISPERER
 
     def load_json(self):
         """Load and split JSON data into pages."""
@@ -252,19 +290,68 @@ class ChatWithPCAP:
             )
             raise ValueError("Document splitting resulted in an empty list.")
 
-    def store_in_chroma(self):
+    def store_in_chroma(self, file_name):
         """Store chunks in Chroma for vector search."""
         with st.spinner("Storing in Chroma..."):
-            session_id = st.session_state.get("session_id", str(uuid.uuid4()))
-            st.session_state["session_id"] = session_id
-            persist_directory = os.path.join(self.chroma_store,f"chroma_db_{session_id}")
+            # session_id = st.session_state.get("session_id", str(uuid.uuid4()))
+            # st.session_state["session_id"] = session_id
+            persist_directory = os.path.join(
+                self.chroma_store, f"chroma_db_{file_name}"
+            )
             self.vectordb = Chroma.from_documents(
                 self.docs,
                 embedding=self.embedding_model,
                 persist_directory=persist_directory,
             )
+            self.vectordb_dict[file_name] = self.vectordb
 
-    def reasoning_logic(self, lm, context, question):
+
+class RetrievePCAP:
+    def __init__(self, store_pcap: StorePCAP, llm: str):
+        self.store_pcap = store_pcap
+        self.llm = llm
+
+    def _get_system_text(self, pcap_data: str) -> str:
+        PACKET_WHISPERER = f"""
+        You are an expert assistant specialized in analyzing packet captures (PCAPs) for troubleshooting and technical analysis. Use the data in the provided to answer user questions accurately.
+
+        Your goal is to provide a clear, concise, and accurate analysis of the packet capture data, leveraging the packet details from the uploaded .pcap JSON.
+        """
+        return PACKET_WHISPERER
+
+    def get_concerned_files(self, question):
+        all_files = [f"{Path(file).stem}" for file in self.store_pcap.json_paths]
+        context = f""" Provided the following PCAP files: {str(all_files)} and the question: {question}
+                    return the relevant files for the question, it can be one or all files but never zero files
+                    return as a list of files
+                    """
+        response = self.reasoning_logic(context, question, llm=self.store_pcap.models[0])
+        files = ast.literal_eval(response.answer)
+        return files
+
+    def get_context(self, concerned_files, question):
+        # Retrieve relevant documents
+        context = ""
+        for file in concerned_files:
+            vector_db = self.store_pcap.vectordb_dict[file]
+            retrieved_docs = vector_db.as_retriever(
+                search_kwargs={"k": 5}
+            ).get_relevant_documents(question)
+            #self.save_retrieved_docs(retrieved_docs)
+            retrieved_text = "\n\n".join(doc.page_content for doc in retrieved_docs)
+            context += f"\n\n #[{file}]#:{retrieved_text}"
+        print("Retrieved text:\n", context)
+        return context
+
+    def reasoning_logic(self, context, question, llm):
+        if llm == self.store_pcap.models[0]:
+            lm = dspy.LM("openai/gpt-4o", api_key=os.getenv("OPENAI_API_KEY"))
+        elif llm == self.store_pcap.models[1]:
+            lm = dspy.LM(
+                "openai/llama-3.3-70b-versatile",
+                api_key=os.getenv("GROQ_API_KEY"),
+                api_base="https://api.groq.com/openai/v1",
+            )
         dspy.configure(lm=lm)
         respond = dspy.ChainOfThought("context, question -> answer")
         result = respond(context=context, question=question)
@@ -272,36 +359,24 @@ class ChatWithPCAP:
         # dspy.inspect_history(n=5)
         return result
 
-    def chat(self, question, llm):
-        all_results = []
+    def chat(self, question):
         response_placeholders = {}
 
-        # Retrieve relevant documents
-        retrieved_docs = self.vectordb.as_retriever(
-            search_kwargs={"k": 5}
-        ).get_relevant_documents(question)
-        retrieved_text = "\n\n".join(doc.page_content for doc in retrieved_docs)
+        concerned_files = self.get_concerned_files(question)
+
+        context = self.get_context(concerned_files, question)
 
         # Create system text
         system_text = st.session_state.get(
-            "priming_text", self._get_system_text(retrieved_text)
+            "priming_text", self._get_system_text(context)
         )
 
         # Prepend system and retrieved context to the question
-        full_prompt = f"{system_text}\n\nContext:\n{retrieved_text}"
-        print("Retrieved text:\n", retrieved_text)
+        full_prompt = f"{system_text}\n\nContext:\n{context}"
+        print("Retrieved text:\n", context)
 
-        if llm == self.models[0]:
-            lm = dspy.LM("openai/gpt-4o", api_key=os.getenv("OPENAI_API_KEY"))
-        elif llm == self.models[1]:
-            lm = dspy.LM(
-                "openai/llama-3.3-70b-versatile",
-                api_key=os.getenv("GROQ_API_KEY"),
-                api_base="https://api.groq.com/openai/v1",
-            )
-
-        response_placeholders= self.reasoning_logic(
-            lm=lm, context=full_prompt, question=question
+        response_placeholders = self.reasoning_logic(
+            context=full_prompt, question=question, llm=self.llm
         )
         return response_placeholders.reasoning, response_placeholders.answer
 
@@ -318,10 +393,13 @@ def main():
     files = Frontend.process_multifile_pcap()
     st.markdown("---")
 
+    json_files = [file["json_path"] for file in files]
+    pcap_files = [file["pcap_path"] for file in files]
+
     # Step 2:
     if files:
         st.subheader("Step 2: View uploaded CSV files")
-        Frontend.view_csv_file(files)
+        Frontend.view_csv_file(json_files)
         st.markdown("---")
 
     # Step 3:
@@ -333,7 +411,9 @@ def main():
     # Step 4:
     st.subheader("Step 4: Query the file with AI Assistance")
     if "chat_instance" not in st.session_state and files:
-        st.session_state["chat_instance"] = ChatWithPCAP(json_path=files[0]["json_path"], models=models)
+        st.session_state["chat_instance"] = StorePCAP(
+            json_paths=json_files, models=models
+        )
 
     # Initialize chat history
     if "messages" not in st.session_state:
@@ -346,12 +426,13 @@ def main():
 
     # React to user input
     if prompt := st.chat_input("Ask a question about the PCAP data"):
+        chatbot = RetrievePCAP(store_pcap=st.session_state["chat_instance"], llm=llm)
         # Display user message in chat message container
         st.chat_message("user").markdown(prompt)
         # Add user message to chat history
         st.session_state.messages.append({"role": "user", "content": prompt})
 
-        response_reasoning, response_answer = st.session_state["chat_instance"].chat(prompt, llm)
+        response_reasoning, response_answer = chatbot.chat(prompt)
         # Display assistant response in chat message container
         with st.chat_message("assistant"):
             st.subheader("Reasoning:")

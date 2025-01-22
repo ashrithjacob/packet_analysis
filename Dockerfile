@@ -37,7 +37,8 @@ RUN echo "==> Install more pip packages..." \
     && pip install --break-system-packages -U --quiet langchain-openai==0.3.0\
     && pip install --break-system-packages -U --quiet langchain-text-splitters==0.3.5\
     && pip install --break-system-packages -U --quiet jq==1.8.0\
-    && pip install --break-system-packages -U --quiet chromadb==0.6.3
+    && pip install --break-system-packages -U --quiet chromadb==0.6.3\
+    && pip install --break-system-packages -U --quiet langchain-core==0.3.30
 
 
 # Install tshark
