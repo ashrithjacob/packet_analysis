@@ -4,3 +4,4 @@ __pycache__
 temp/
 chroma_store/
 chroma/
+ec2_compose_update.sh
