@@ -1,0 +1,51 @@
+Below is a sample set of questions you might ask your co-pilot , which already has access to the detailed fields from EAPOL and RADIUS packet captures. Each question is phrased from the perspective of a human analyst who wants insights about the network behavior; the co-pilot has the data, so the question focuses on what the analyst wants to know.
+
+1. Authentication and EAPOL Key Frames
+    “Co-pilot, can you verify if the client’s 4-Way Handshake completed successfully for MAC 0E-9D-8F-CD-3B-B6 on SSID ‘VAULT’? If not, which EAPOL Key message or step failed?”
+Why This Question?
+    An analyst wants a straightforward success/failure assessment of the WPA2/WPA3 4-Way Key exchange, with details about exactly where the process might have stalled.
+
+2. RADIUS vs. Local Authentication
+    “Co-pilot, does the RADIUS accounting record for MAC 0E-9D-8F-CD-3B-B6 show Acct-Authentic=RADIUS(1) or Local(2)? And what does that indicate about how this user was authenticated?”
+Why This Question?
+    Distinguishes whether the device was validated by a RADIUS-based approach (Enterprise or MPSK) or purely local PSK.
+
+3. SSID and AP Correlation
+    “Co-pilot, can you confirm that the Called-Station-Id ‘D4-BA-BA-A1-48-43:VAULT’ in the RADIUS logs truly corresponds to the same BSSID and SSID we see in the wireless frames?”
+Why This Question?
+    Ensures the RADIUS record actually matches the real AP/BSSID on the air, preventing confusion about mismatched logging.
+
+4. VLAN Assignment or Tunnel Attributes
+    “Co-pilot, did the RADIUS Access-Accept for this session include any Tunnel-Type=VLAN attributes? If so, what VLAN ID was assigned to the client, and do we see that reflected in subsequent accounting or local logs?”
+Why This Question?
+    For MPSK or Enterprise setups that do dynamic VLAN assignment, the analyst wants confirmation of the VLAN from the RADIUS packet and that the station was actually placed in it.
+
+5. EAP vs. PSK Determination
+    “Co-pilot, from the RSN IE in the EAPOL frames, is the AKM set to PSK(2) or 802.1X(1)? And do we see any EAP-Message attributes in the RADIUS Access-Request? Let’s clarify whether this is a WPA2-Personal, MPSK, or WPA2-Enterprise session.”
+Why This Question?
+    Helps the analyst quickly identify the authentication method being used.
+
+6. Connect-Info and Link Speed
+    “Co-pilot, what does the Connect-Info(77) attribute say about the user’s link speed and PHY?
+Why This Question?
+    Verifies RADIUS logs (Connect-Info) and actual radio conditions, useful for performance troubleshooting.
+
+7. Session Success vs. Failure Timeline
+    “Co-pilot, can you lay out the time sequence from first EAPOL handshake packet to Access-Accept, and then to Acct-Status-Type=Start? If there was a large delay, let me know.”
+Why This Question?
+    The analyst wants a chronological overview to see if any step took too long, which might cause timeouts.
+
+8. MPSK Real-Time vs. Cached
+    “Co-pilot, do we see a RADIUS Access-Request for this client’s MAC every time it connects, or only once after the AP rebooted? I want to confirm if MPSK is done on-the-fly or cached locally.”
+Why This Question?
+    Helps determine the MPSK vendor approach (real-time RADIUS queries vs. local caching).
+
+9. EAPOL Key Frame Details
+    “Co-pilot, in Message #2 of the 4-Way Handshake, does the RSN IE confirm the client and AP both agreed on AES-CCMP, or is there a mismatch? Provide the exact Pairwise Cipher and AKM fields.”
+Why This Question?
+    Ensures cipher agreement. A mismatch can cause handshake failures.
+
+10. Summarizing the Network Topology
+    “Co-pilot, please give me a final summary: for client MAC 0E-9D-8F-CD-3B-B6, SSID ‘VAULT,’ AP BSSID D4-BA-BA-A1-48-43, what was the authentication type (PSK/MPSK/Enterprise), the assigned VLAN (if any), the link speed from Connect-Info, and whether we see an Accounting Start indicating success?”
+Why This Question?
+    A one-stop question to unify all data points—encryption method, VLAN, speed, success/failure—into a single final insight.

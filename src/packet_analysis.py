@@ -7,7 +7,6 @@ import dspy
 import uuid
 import shutil
 import ast
-
 # import helper as hp
 import pandas as pd
 from pathlib import Path
@@ -72,8 +71,10 @@ class Frontend:
 class Backend:
     @classmethod
     def _get_pcaps_path(cls, base_path, uploaded_file):
-        next_run_folder = cls._get_next_run_folder(base_path)
-        subfolder = os.path.join(cls.temp_dir, next_run_folder)
+        if "run_number" not in st.session_state:
+            st.session_state["run_number"] = cls._get_next_run_folder(base_path)
+        run_folder = st.session_state["run_number"]
+        subfolder = os.path.join(cls.temp_dir, run_folder)
         os.makedirs(
             subfolder, exist_ok=True
         )  # Create the subfolder if it doesn't exist
@@ -313,35 +314,54 @@ class RetrievePCAP:
 
     def _get_system_text(self, pcap_data: str) -> str:
         PACKET_WHISPERER = f"""
-        You are an expert assistant specialized in analyzing packet captures (PCAPs) for troubleshooting and technical analysis. Use the data in the provided to answer user questions accurately.
+        You are an expert assistant copilot specialized in analyzing packet captures (PCAPs) for troubleshooting and technical analysis. Use the data in the provided to answer user questions accurately.
 
-        Your goal is to provide a clear, concise, and accurate analysis of the packet capture data, leveraging the packet details from the uploaded .pcap JSON.
+        Your goal is to provide a clear, descriptive and accurate analysis of the packet capture data, leveraging the packet details from the uploaded .pcap JSON.
         """
         return PACKET_WHISPERER
 
     def get_concerned_files(self, question):
         all_files = [f"{Path(file).stem}" for file in self.store_pcap.json_paths]
+        st.write(f"Available files: {all_files}")
         context = f""" Provided the following PCAP files: {str(all_files)} and the question: {question}
                     return the relevant files for the question, it can be one or all files but never zero files
                     return as a list of files
                     """
         response = self.reasoning_logic(context, question, llm=self.store_pcap.models[0])
         files = ast.literal_eval(response.answer)
+        st.write(f"Concerned files: {files}")
         return files
 
-    def get_context(self, concerned_files, question):
-        # Retrieve relevant documents
+    def get_multifile_context(self, concerned_files, question):
+        expanded_query = self.query_expansion(question, files=concerned_files)
+        st.write(f"Expanded query: {expanded_query}")
+        if list(expanded_query.keys()) == concerned_files:
+            # Retrieve relevant documents
+            context = ""
+            for file in concerned_files:
+                vector_db = self.store_pcap.vectordb_dict[file]
+                retrieved_docs = vector_db.as_retriever(
+                    search_kwargs={"k": 5}
+                ).get_relevant_documents(expanded_query[file])
+                #self.save_retrieved_docs(retrieved_docs)
+                retrieved_text = "\n\n".join(doc.page_content for doc in retrieved_docs)
+                context += f"\n\n #[{file}]#:{retrieved_text}"
+            return context, expanded_query
+        else:
+            st.error("Error in LLM parsing. Please try again.")
+
+    def get_singlefile_context(self, file, question):
         context = ""
-        for file in concerned_files:
-            vector_db = self.store_pcap.vectordb_dict[file]
-            retrieved_docs = vector_db.as_retriever(
-                search_kwargs={"k": 5}
-            ).get_relevant_documents(question)
-            #self.save_retrieved_docs(retrieved_docs)
-            retrieved_text = "\n\n".join(doc.page_content for doc in retrieved_docs)
-            context += f"\n\n #[{file}]#:{retrieved_text}"
-        print("Retrieved text:\n", context)
-        return context
+        expanded_query = ""
+        vector_db = self.store_pcap.vectordb_dict[file]
+        retrieved_docs = vector_db.as_retriever(
+            search_kwargs={"k": 5}
+        ).get_relevant_documents(question)
+        #self.save_retrieved_docs(retrieved_docs)
+        retrieved_text = "\n\n".join(doc.page_content for doc in retrieved_docs)
+        context += f"\n\n #[{file}]#:{retrieved_text}"
+        return context, expanded_query
+
 
     def reasoning_logic(self, context, question, llm):
         if llm == self.store_pcap.models[0]:
@@ -358,22 +378,37 @@ class RetrievePCAP:
         # Print the history of prompts
         # dspy.inspect_history(n=5)
         return result
+    
+    def query_expansion(self, question, files):
+        # Retrieve relevant documents
+        context = f""" Provided the following PCAP files: {str(files)} and the origin question: {question};
+                   Ask best question to ask each file such that it helps in answering the original question
+                   return as a json object with file name as key and question as value.
+                    """
+        response = self.reasoning_logic(context, question, llm=self.store_pcap.models[0])
+        expanded_query = json.loads(response.answer)
+        return expanded_query
 
     def chat(self, question):
         response_placeholders = {}
 
         concerned_files = self.get_concerned_files(question)
 
-        context = self.get_context(concerned_files, question)
-
+        if len(concerned_files) > 1:
+            context, expanded_query = self.get_multifile_context(concerned_files, question)
+        elif len(concerned_files) == 1:
+            context, expanded_query = self.get_singlefile_context(concerned_files[0], question)
+        else:
+            st.error("Error in file parsing. Please try again.")
         # Create system text
         system_text = st.session_state.get(
             "priming_text", self._get_system_text(context)
         )
 
         # Prepend system and retrieved context to the question
-        full_prompt = f"{system_text}\n\nContext:\n{context}"
-        print("Retrieved text:\n", context)
+        #TODO: find a better way to parse the context
+        full_prompt = f"{system_text}\n\n Questions asked from the files:{expanded_query} \n\nContext from respective files:\n{context}"
+        #print("Retrieved text:\n", context)
 
         response_placeholders = self.reasoning_logic(
             context=full_prompt, question=question, llm=self.llm
@@ -389,7 +424,7 @@ def main():
     Frontend.page_intro(logo=os.path.join(root_dir, image_dir))
 
     # Step 1:
-    st.subheader("Step 1:  Upload and convert one or multiple PCAPs")
+    st.subheader("Step 1:  Upload and convert one or multiple PCAPs upto 1MB each")
     files = Frontend.process_multifile_pcap()
     st.markdown("---")
 
