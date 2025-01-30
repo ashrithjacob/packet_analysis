@@ -38,6 +38,7 @@ RUN echo "==> Install more pip packages..." \
     && pip install --break-system-packages -U --quiet langchain-text-splitters==0.3.5\
     && pip install --break-system-packages -U --quiet jq==1.8.0\
     && pip install --break-system-packages -U --quiet chromadb==0.6.3\
+    && pip install --break-system-packages -U --quiet chroma-hnswlib==0.7.6\
     && pip install --break-system-packages -U --quiet langchain-core==0.3.30
 
 
@@ -54,4 +55,8 @@ COPY .env .env
 
 EXPOSE 8501
 
-ENTRYPOINT ["streamlit", "run", "src/packet_analysis.py", "--server.port=8501", "--server.address=0.0.0.0"]
+# Create an entrypoint script to run both the cleanup and main application
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

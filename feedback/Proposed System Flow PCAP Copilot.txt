@@ -1,5 +1,8 @@
 Proposed Enhanced Flow
 
+How to get all the ports:
+tshark -r capture.pcap -T fields -e tcp.port -e udp.port | sort -u
+
 1. File Upload:
 -User uploads PCAP(s) via Streamlit.
 -The system confirms file receipt.

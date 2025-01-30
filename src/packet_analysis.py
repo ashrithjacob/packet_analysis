@@ -7,6 +7,7 @@ import dspy
 import uuid
 import shutil
 import ast
+
 # import helper as hp
 import pandas as pd
 from pathlib import Path
@@ -37,6 +38,14 @@ def load_model():
 
 class Frontend:
     def page_intro(logo="images/Nanites.svg"):
+        page_icon = "images/nanites-grey.png"
+        st.set_page_config(
+            page_title="Nanites AI PCAP Copilot",
+            page_icon=page_icon,
+            layout="centered",
+            initial_sidebar_state="auto",
+            menu_items=None,
+        )
         st.image(logo, width=150)
         st.title("Nanites AI PCAP Copilot!!")
         st.markdown("---")
@@ -125,7 +134,6 @@ class Backend:
         pcap_path = cls._get_pcaps_path(cls.temp_dir, uploaded_file)
         pcap_extention = uploaded_file.name.split(".")[-1]
         json_path = pcap_path.replace(pcap_extention, "json")
-        print("json_path", json_path)
         return {"pcap_path": pcap_path, "json_path": json_path}
 
     @classmethod
@@ -149,23 +157,47 @@ class Parser(Backend):
         df = j_to_df.create_df()
         return df
 
+    def get_ports_radius(pcap_path):
+        port_radius = []
+        command = f"tshark -r {pcap_path} -T fields -e udp.port"
+        res = subprocess.run(command, shell=True, capture_output=True, text=True)
+        x = res.stdout.split("\n")[:-1]
+        for port_pair in x:
+            if port_pair:
+                ports = list(map(int, port_pair.split(",")))
+                port_radius.append(min(ports))
+        return port_radius
+
+    def is_radius(pcap_path):
+        ports = Parser.get_ports_radius(pcap_path)
+        if not ports:
+            return False
+        command = f"tshark -r {pcap_path} -d udp.port=={ports[0]},radius -Y 'radius'"
+        res = subprocess.run(command, shell=True, capture_output=True, text=True)
+        print(res.stdout)
+        if res.stdout:
+            return True
+        return False
+        
+    def extract_radius_payload(pcap_path, json_path):
+        unique_ports = list(set(Parser.get_ports_radius(pcap_path)))
+        udp_command = ",".join([f"radius -d udp.port=={port}" for port in unique_ports])
+        command = f"tshark -r {pcap_path} -Y {udp_command},radius -T json -e frame.time -e eth.src -e eth.dst -e eth.type -e ip.src -e ip.dst -e udp.srcport -e udp.dstport -e radius.code -e radius.id -e radius.length -e radius.authenticator -e radius.User_Name -e radius.User_Password_encrypted -e radius.NAS_IP_Address -e radius.NAS_Identifier -e radius.Called_Station_Id -e radius.NAS_Port_Type -e radius.NAS_Port -e radius.Calling_Station_Id -e radius.Connect_Info -e radius.Message_Authenticator -e radius.Tunnel_Password_encrypted -e radius.Tunnel_Private_Group_Id -e radius.Tunnel_Medium_Type -e radius.Tunnel_Type -e radius.Acct_Interim_Interval -e radius.Acct_Status_Type -e radius.Acct_Authentic -e radius.Service_Type -e radius.Acct_Session_Id -e radius.Event_Timestamp -e radius.Acct_Delay_Time -e radius.avp.vendor_id -e radius.Unknown_Attribute > {json_path}"
+        return command
+        
     def pcap_to_json(pcap_path, json_path):
         # Convert pcap to JSON
-        command = f"tshark -nlr '{pcap_path}' -T json > '{json_path}'"
+        if Parser.is_radius(pcap_path):
+            command = Parser.extract_radius_payload(pcap_path, json_path)
+        else:
+            command = f"tshark -nlr '{pcap_path}' -T json > '{json_path}'"
+
         subprocess.run(command, shell=True)
 
         # Remove udp.payload and tcp.payload from the JSON
         try:
             with open(json_path, "r") as file:
                 data = json.load(file)  # Load the JSON data
-
-            # Process each packet and remove unwanted fields
-            for packet in data:
-                layers = packet.get("_source", {}).get("layers", {})
-                if "udp" in layers and "udp.payload" in layers["udp"]:
-                    del layers["udp"]["udp.payload"]
-                if "tcp" in layers and "tcp.payload" in layers["tcp"]:
-                    del layers["tcp"]["tcp.payload"]
 
             # Save the cleaned JSON back to the file
             with open(json_path, "w") as file:
@@ -192,6 +224,9 @@ class JsonToDf:
                 if isinstance(v, dict):
                     my_dict = v
                     self.extract_vals_from_dict(my_dict)
+                elif isinstance(v, list):
+                    self.columns[k] = v[0]
+                    my_dict = None
                 else:
                     self.columns[k] = v
                     my_dict = None
@@ -219,11 +254,11 @@ class JsonToDf:
 
 
 class StorePCAP:
-    def __init__(self, json_paths, models):
+    def __init__(self, json_paths, chroma_store, models):
         self.priming_text = st.session_state.get("priming_text", "")
         self.models = models
         self.embedding_model = load_model()
-        self.chroma_store = self._refresh_chroma_store()
+        self.chroma_store = chroma_store
         self.json_paths = json_paths
         self.pages = None
         self.docs = None
@@ -243,20 +278,6 @@ class StorePCAP:
             self.store_in_chroma(file_name=file_name)
         # self.setup_conversation_memory()
         # self.initialize_llm_chains()
-
-    def _refresh_chroma_store(self):
-        chroma_store = Path(__file__).parent / "chroma_store"
-        os.makedirs(chroma_store, exist_ok=True)
-        for item in os.listdir(chroma_store):
-            item_path = os.path.join(chroma_store, item)
-            try:
-                if os.path.isfile(item_path) or os.path.islink(item_path):
-                    os.unlink(item_path)
-                elif os.path.isdir(item_path):
-                    shutil.rmtree(item_path)
-            except Exception as e:
-                print(f"Failed to delete {item_path}. Reason: {e}")
-        return chroma_store
 
     def load_json(self):
         """Load and split JSON data into pages."""
@@ -327,7 +348,9 @@ class RetrievePCAP:
                     return the relevant files for the question, it can be one or all files but never zero files
                     return as a list of files
                     """
-        response = self.reasoning_logic(context, question, llm=self.store_pcap.models[0])
+        response = self.reasoning_logic(
+            context, question, llm=self.store_pcap.models[0]
+        )
         files = ast.literal_eval(response.answer)
         st.write(f"Concerned files: {files}")
         return files
@@ -343,7 +366,7 @@ class RetrievePCAP:
                 retrieved_docs = vector_db.as_retriever(
                     search_kwargs={"k": 5}
                 ).get_relevant_documents(expanded_query[file])
-                #self.save_retrieved_docs(retrieved_docs)
+                # self.save_retrieved_docs(retrieved_docs)
                 retrieved_text = "\n\n".join(doc.page_content for doc in retrieved_docs)
                 context += f"\n\n #[{file}]#:{retrieved_text}"
             return context, expanded_query
@@ -357,11 +380,10 @@ class RetrievePCAP:
         retrieved_docs = vector_db.as_retriever(
             search_kwargs={"k": 5}
         ).get_relevant_documents(question)
-        #self.save_retrieved_docs(retrieved_docs)
+        # self.save_retrieved_docs(retrieved_docs)
         retrieved_text = "\n\n".join(doc.page_content for doc in retrieved_docs)
         context += f"\n\n #[{file}]#:{retrieved_text}"
         return context, expanded_query
-
 
     def reasoning_logic(self, context, question, llm):
         if llm == self.store_pcap.models[0]:
@@ -378,14 +400,16 @@ class RetrievePCAP:
         # Print the history of prompts
         # dspy.inspect_history(n=5)
         return result
-    
+
     def query_expansion(self, question, files):
         # Retrieve relevant documents
         context = f""" Provided the following PCAP files: {str(files)} and the origin question: {question};
                    Ask best question to ask each file such that it helps in answering the original question
                    return as a json object with file name as key and question as value.
                     """
-        response = self.reasoning_logic(context, question, llm=self.store_pcap.models[0])
+        response = self.reasoning_logic(
+            context, question, llm=self.store_pcap.models[0]
+        )
         expanded_query = json.loads(response.answer)
         return expanded_query
 
@@ -395,9 +419,13 @@ class RetrievePCAP:
         concerned_files = self.get_concerned_files(question)
 
         if len(concerned_files) > 1:
-            context, expanded_query = self.get_multifile_context(concerned_files, question)
+            context, expanded_query = self.get_multifile_context(
+                concerned_files, question
+            )
         elif len(concerned_files) == 1:
-            context, expanded_query = self.get_singlefile_context(concerned_files[0], question)
+            context, expanded_query = self.get_singlefile_context(
+                concerned_files[0], question
+            )
         else:
             st.error("Error in file parsing. Please try again.")
         # Create system text
@@ -406,9 +434,9 @@ class RetrievePCAP:
         )
 
         # Prepend system and retrieved context to the question
-        #TODO: find a better way to parse the context
+        # TODO: find a better way to parse the context
         full_prompt = f"{system_text}\n\n Questions asked from the files:{expanded_query} \n\nContext from respective files:\n{context}"
-        #print("Retrieved text:\n", context)
+        # print("Retrieved text:\n", context)
 
         response_placeholders = self.reasoning_logic(
             context=full_prompt, question=question, llm=self.llm
@@ -420,36 +448,45 @@ class RetrievePCAP:
 def main():
     root_dir = Path(__file__).parent.parent
     image_dir = "images/Nanites.svg"
+    chroma_store = Path(__file__).parent / "chroma_store"
+
     # Display the introduction page
     Frontend.page_intro(logo=os.path.join(root_dir, image_dir))
 
     # Step 1:
+    print("Step 1")
     st.subheader("Step 1:  Upload and convert one or multiple PCAPs upto 1MB each")
     files = Frontend.process_multifile_pcap()
     st.markdown("---")
 
     json_files = [file["json_path"] for file in files]
     pcap_files = [file["pcap_path"] for file in files]
+    print("json_files", json_files)
 
     # Step 2:
+    print("Step 2")
     if files:
         st.subheader("Step 2: View uploaded CSV files")
         Frontend.view_csv_file(json_files)
+        print("step 2.1")
         st.markdown("---")
 
     # Step 3:
+    print("Step 3")
     st.subheader("Step 3: Choose the model of choice for the querying")
     models = ("GPT-4o", "Llama-3.3-70b")
     llm = st.selectbox("Choose the model", models)
     st.markdown("---")
 
     # Step 4:
+    print("Step 4")
     st.subheader("Step 4: Query the file with AI Assistance")
-    if "chat_instance" not in st.session_state and files:
-        st.session_state["chat_instance"] = StorePCAP(
-            json_paths=json_files, models=models
+    if files:
+        print("Step 4.1")
+        store_pcap = StorePCAP(
+            json_paths=json_files, chroma_store=chroma_store, models=models
         )
-
+    print("Step 4.2")
     # Initialize chat history
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -461,7 +498,7 @@ def main():
 
     # React to user input
     if prompt := st.chat_input("Ask a question about the PCAP data"):
-        chatbot = RetrievePCAP(store_pcap=st.session_state["chat_instance"], llm=llm)
+        chatbot = RetrievePCAP(store_pcap=store_pcap, llm=llm)
         # Display user message in chat message container
         st.chat_message("user").markdown(prompt)
         # Add user message to chat history
