@@ -501,7 +501,7 @@ def main():
     Frontend.page_intro(logo=os.path.join(root_dir, image_dir))
 
     # Step 1:
-    st.subheader("Step 1:  Upload and convert one or multiple PCAPs upto 1MB each")
+    st.subheader("Step 1:  Upload and convert a single PCAP[upto 1MB]")
     files = Frontend.process_multifile_pcap()
     st.markdown("---")
 
