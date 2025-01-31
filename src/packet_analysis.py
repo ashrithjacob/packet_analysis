@@ -536,21 +536,23 @@ def main():
 
     # React to user input
     if prompt := st.chat_input("Ask a question about the PCAP data"):
-        df = st.session_state["df"]
-        store = get_store(df, prompt)
-        runner = Task(df, user_query=prompt)
-        steps = runner.execute(store["steps"])
-        st.chat_message("user").markdown(prompt)
-        # Add user message to chat history
-        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.spinner("Processing User Question..."):
+            df = st.session_state["df"]
+            store = get_store(df, prompt)
+            runner = Task(df, user_query=prompt)
+            steps = runner.execute(store["steps"])
+            st.chat_message("user").markdown(prompt)
+            # Add user message to chat history
+            st.session_state.messages.append({"role": "user", "content": prompt})
 
         # Display assistant response in chat message container
         with st.chat_message("assistant"):
-            for (idx,step) in enumerate(steps):
-                print(f"step {idx}", step)
-                runner.router(step)
-                response = runner.steps_eval[idx]["answer"]
-                st.markdown(response)
+            with st.spinner("Generating AI Response..."):
+                for (idx,step) in enumerate(steps):
+                    print(f"step {idx}", step)
+                    runner.router(step)
+                    response = runner.steps_eval[idx]["answer"]
+                    st.markdown(response)
         # Add assistant response to chat history
         st.session_state.messages.append(
             {"role": "assistant", "content": response}
