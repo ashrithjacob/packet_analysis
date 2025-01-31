@@ -241,10 +241,11 @@ class Frontend:
     def process_multifile_pcap(cls):
         files = []
         uploaded_files = st.file_uploader(
-            "Upload a PCAP file(s)", type=["pcap", "pcapng"], accept_multiple_files=True
+            "Upload a PCAP file(s)", type=["pcap", "pcapng"], accept_multiple_files=False
         )
-        for uploaded_file in uploaded_files:
-            paths = Backend.upload_and_process_pcap(uploaded_file)
+        #for uploaded_file in uploaded_files:
+        if uploaded_files:
+            paths = Backend.upload_and_process_pcap(uploaded_files)
             files.append(paths)
         return files
 
@@ -295,7 +296,7 @@ class Backend:
 
     def _check_max_size_limit(uploaded_file, max_pcap_size_mb=1):
         if uploaded_file:
-            st.write(f"Processing uploaded PCAP file...{uploaded_file.name}")
+            st.write(f"Processing uploaded PCAP file:     {uploaded_file.name}")
             if uploaded_file.size > max_pcap_size_mb * 1024 * 1024:
                 st.message(
                     f"The file exceeds the maximum size of {max_pcap_size_mb} MB. System might be very slow."
@@ -503,11 +504,13 @@ def main():
     # Step 1:
     st.subheader("Step 1:  Upload and convert a single PCAP[upto 1MB]")
     files = Frontend.process_multifile_pcap()
+    print("files", files)
     st.markdown("---")
 
-    json_files = [file["json_path"] for file in files]
-    pcap_files = [file["pcap_path"] for file in files]
-    print("json_files", json_files)
+    if files:
+        json_files = [file["json_path"] for file in files]
+        pcap_files = [file["pcap_path"] for file in files]
+        print("json_files", json_files)
 
     # Step 2:
     if files:
