@@ -7,9 +7,11 @@ import dspy
 import uuid
 import shutil
 import ast
-
-# import helper as hp
+import re
 import pandas as pd
+from groq import Groq
+from pydantic import BaseModel
+from openai import OpenAI
 from pathlib import Path
 from langchain_community.vectorstores import Chroma
 from langchain_community.document_loaders import JSONLoader
@@ -20,6 +22,183 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+groq = Groq(api_key = os.getenv("GROQ_API_KEY"))
+gpt = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+lm_gpt4o = dspy.LM("openai/gpt-4o", temperature=0.9, api_key=os.getenv("OPENAI_API_KEY"))
+lm_llama70b_r1 = dspy.LM(
+                "openai/deepseek-r1-distill-llama-70b",
+                api_key=os.getenv("GROQ_API_KEY"),
+                api_base="https://api.groq.com/openai/v1",
+            )
+dspy.configure(lm=lm_gpt4o)
+
+class ColumnSelectorQA(dspy.Signature):
+    """Answer questions with short factoid answers."""
+    context = dspy.InputField(desc="a paragraph of text")
+    question = dspy.InputField()
+    answer = dspy.OutputField(desc="list of column names")
+
+class RouterQA(dspy.Signature):
+    """Answer questions with short factoid answers."""
+    question = dspy.InputField(desc=" task description")
+    answer = dspy.OutputField(desc="`more_context` or `dataframe_operation`")
+
+class CodingQA(dspy.Signature):
+    """Answer questions with short factoid answers."""
+    question = dspy.InputField()
+    answer = dspy.OutputField(desc="code snippet list")
+
+class DescriptionQA(dspy.Signature):
+    """Answer in descriptive format"""
+    context = dspy.InputField(desc="a paragraph of text with pcap in csv format")
+    question = dspy.InputField()
+    answer = dspy.OutputField(desc="concise and non generic answer rendered with a heading and in markdown format")
+
+class GotAnswerJudge(dspy.Signature):
+    """Judge if the answer is factually correct based on the context."""
+    question = dspy.InputField(desc="Question to be answered")
+    answer = dspy.InputField(desc="Answer for the question")
+    factually_correct = dspy.OutputField(desc="Is the question addressed completely by the answer?", prefix="Factual[Yes/No]:")
+
+class LongOrShortJudge(dspy.Signature):
+    """Judge if the answer is to be descriptive or can be done in one step."""
+    question = dspy.InputField(desc="Question to be answered")
+    long_or_short = dspy.OutputField(desc="Will a precise answer satisfy the user(i.e are they asking a specific question) or a long descriptive one (i.e are they generally exploring ther pcap)? If in doubt go with `short`", prefix="Long or Short")
+
+class Task:
+    def __init__(self, df, user_query):
+        self.df = df
+        self.user_query = user_query
+        self.columns = df.columns.tolist()[1:]
+        self.column_cot = dspy.ChainOfThought(ColumnSelectorQA)
+        self.router_cot = dspy.ChainOfThought(RouterQA)
+        self.coding_cot = dspy.ChainOfThought(CodingQA)
+        self.description_cot = dspy.ChainOfThought(DescriptionQA)
+        self.long_or_short_judge = dspy.ChainOfThought(LongOrShortJudge)
+        self.steps_eval = []
+        self.type = None
+
+    def _get_column_names(self, query):
+        try:
+            context = f""" You are provided a pcap file in csv format. These are the column names in the csv file:
+                            str({self.columns})
+                        """
+            question = f"Return all possible column names with at most 10 columns to fulfil this task: {query}"
+            result_cot = self.column_cot(context=context, question=question)
+            try:
+                columns = ast.literal_eval(result_cot.answer)
+                if isinstance(columns, list):
+                    return columns
+            except Exception as e:
+                print("Could not parse the column names to list-> main")
+                print("error", e)
+                return []
+        except Exception as e:
+            print(f"Error in _get_column_names: {str(e)}")
+            return []
+
+    def _filter_columns(self, columns, query):
+        try:
+            context = f""" You are provided a pcap file in csv. These are the column names in the csv file:
+                            str({columns})
+                        """
+            question = f"Return the most important columns from the context that would be required to extract information for this task: {query}"
+            result_cot = self.column_cot(context=context, question=question)
+            try:
+                columns_filtered = ast.literal_eval(result_cot.answer)
+                if isinstance(columns_filtered, list):
+                    return columns_filtered
+            except Exception as e:
+                print("Could not parse the column names to list-> filtered")
+                return columns[:10]  # Return first 10 columns as fallback
+        except Exception as e:
+            print(f"Error in _filter_columns: {str(e)}")
+            return columns[:10]
+
+    def more_context(self, query):
+        limit = 5
+        try:
+            columns = self._get_column_names(query)
+            if not columns:  # If no columns returned, use first 10 columns
+                columns = self.columns[:limit]
+            if len(columns) > limit:
+                columns = self._filter_columns(columns, query)
+            
+            # Ensure we have valid columns before creating markdown
+            valid_columns = [col for col in columns if col in self.df.columns]
+            if not valid_columns:
+                valid_columns = self.df.columns[:limit]
+            print("valid_columns", valid_columns)
+            df_in_markdown = self.df.loc[:, valid_columns].to_markdown()
+            print("df_in_markdown", df_in_markdown)
+            context = f""" You are provided a pcap file with only some of the columns shown below:
+                            {df_in_markdown}
+                        """
+            if self.type == "short":
+                question = f"""[Question]:{self.user_query} 
+                            [IMPORTANT]: DO NOT MENTION 'CSV' or 'PANDAS' in the answer, only refer to the data as a pcap."""
+            elif self.type == "long":
+                question = f"""You are tasked on expounding on the following task:{query}, with the main goal to answer the question:{self.user_query} 
+                            Based on the new information provided in context, return a detailed answer regarding the technical aspects of the task.
+                            [IMPORTANT]: DO NOT MENTION 'CSV' or 'PANDAS' in the answer, only refer to the data as a pcap."""
+                
+            description = self.description_cot(context=context, question=question)
+            return description.answer
+        except Exception as e:
+            print(f"Error in more_context: {str(e)}")
+            return f"Unable to process the query due to an error: {str(e)}"
+
+
+    def router(self, task: str):
+        try:
+            method_name = "more_context"
+            if hasattr(self, method_name):
+                method = getattr(self, method_name)
+                try:
+                    description = method(task)
+                    result = {"task": task, 
+                              "answer": description,
+                              "error": False
+                        }
+                    self.steps_eval.append(result)
+                except Exception as e:
+                    error_result = {
+                        "task": task,
+                        "answer": f"Error processing task: {str(e)}",
+                        "error": True
+                    }
+                    self.steps_eval.append(error_result)
+                    print(f"Error executing {method_name}: {str(e)}")
+            else:
+                error_result = {
+                    "task": task,
+                    "answer": f"Method {method_name} does not exist",
+                    "error": True
+                }
+                self.steps_eval.append(error_result)
+                print(f"Method {method_name} does not exist")
+        except Exception as e:
+            error_result = {
+                "task": task,
+                "answer": f"Fatal error in router: {str(e)}",
+                "error": True
+            }
+            self.steps_eval.append(error_result)
+            print(f"Fatal error in router: {str(e)}")
+
+    def execute(self, steps):
+        question = self.user_query
+        context = "\n\n".join(steps)
+        long_or_short = self.long_or_short_judge(question=question, context=context)
+        print("user query goal", long_or_short.long_or_short)
+        if "long" not in long_or_short.long_or_short.lower():
+            context = ["\n\n".join(steps)]
+            self.type = "short"
+            return context
+        else:
+            self.type = "long"
+            return steps
 
 @st.cache_resource
 def load_model():
@@ -75,6 +254,7 @@ class Frontend:
             df = Parser.json_to_df(file)
             st.markdown(f"*{file_name_csv}*")
             st.dataframe(df)
+            return df
 
 
 class Backend:
@@ -253,195 +433,62 @@ class JsonToDf:
         return self.df
 
 
-class StorePCAP:
-    def __init__(self, json_paths, chroma_store, models):
-        self.priming_text = st.session_state.get("priming_text", "")
-        self.models = models
-        self.embedding_model = load_model()
-        self.chroma_store = chroma_store
-        self.json_paths = json_paths
-        self.pages = None
-        self.docs = None
-        self.vectordb = None
-        self.memory = None
-        self.llm_chains = None
-        self.vectordb_dict = {}
-        self.conversation_history = []
 
-        # Load and process the JSON file
-        # for json_file in json_paths:
-        for json_path in self.json_paths:
-            file_name = Path(json_path).stem
-            self.json_path = json_path
-            self.load_json()
-            self.split_into_chunks()
-            self.store_in_chroma(file_name=file_name)
-        # self.setup_conversation_memory()
-        # self.initialize_llm_chains()
+def step_outliner(df, user_input):
+    total_packets = len(df)
+    df_head = df.head(3).to_markdown()
+    context = f""" You are provided a pcap file in csv format. There are total of {total_packets} packets (rows of the csv), but only first 3 rows are shown below:
+                    {df_head}
+                    from the context answer the following question :
+                """
+    question = f"""
+                [user profile]: A network engineer is asking you a question about the pcap file(s).
+                [question]: {user_input}
+                [Note]: provide a list of steps, (highlighted by `###`), to get the answer. Do not write any code. Just provide the required column names, whose entire context would be needed to answer the question.
+                """
+    query = f"{context}: \n\n{question}"
 
-    def load_json(self):
-        """Load and split JSON data into pages."""
-        with st.spinner("Loading JSON data..."):
-            # Use jq schema to exclude specific fields
-            self.loader = JSONLoader(
-                file_path=self.json_path,
-                jq_schema="""
-                    .[] 
-                    | ._source.layers
-                    | del(.data)
-                """,
-                text_content=False,
-            )
-            self.pages = self.loader.load_and_split()
+    completion = groq.chat.completions.create(
+        model="deepseek-r1-distill-llama-70b",
+        messages=[
+            {
+                "role": "user",
+                "content": query,
+            },
+        ],
+        temperature=0.6,
+        top_p=0.95,
+        stream=True,
+        stop=None,
+    )
 
-        if not self.pages:
-            st.error("No data loaded from JSON file. Please check the input file.")
-            raise ValueError("No data loaded from JSON file.")
+    full_response = ""
+    for chunk in completion:
+        content = chunk.choices[0].delta.content or ""
+        full_response += content  # Append each chunk to the full response
+    return (full_response)  # Optional: still print while storing
 
-    def split_into_chunks(self):
-        """Split loaded pages into smaller, meaningful chunks."""
-        with st.spinner("Splitting into chunks..."):
-            text_splitter = SemanticChunker(
-                embeddings=self.embedding_model, breakpoint_threshold_type="percentile"
-            )
-            self.docs = text_splitter.split_documents(self.pages)
+def is_serialized(text):
+    # Check if a line contains a number followed by a period"
+    return bool(re.match(r'.*\d+(\.|:)', text))
 
-        if not self.docs:
-            st.error(
-                "No documents were generated from the PCAP data. Please check the input file."
-            )
-            raise ValueError("Document splitting resulted in an empty list.")
+def extract_steps(text):
+    # Split the text into sections by numbered items
+    split_lines = text.split("\n\n")
+    steps = [s for s in split_lines if is_serialized(s)]
+    return steps
 
-    def store_in_chroma(self, file_name):
-        """Store chunks in Chroma for vector search."""
-        with st.spinner("Storing in Chroma..."):
-            # session_id = st.session_state.get("session_id", str(uuid.uuid4()))
-            # st.session_state["session_id"] = session_id
-            persist_directory = os.path.join(
-                self.chroma_store, f"chroma_db_{file_name}"
-            )
-            self.vectordb = Chroma.from_documents(
-                self.docs,
-                embedding=self.embedding_model,
-                persist_directory=persist_directory,
-            )
-            self.vectordb_dict[file_name] = self.vectordb
+def store_thoughts_and_steps(full_response):
+    store = {}
+    store["thoughts"] = full_response.split('</think>')[0].split('<think>')[1:]
+    steps = extract_steps(full_response.split('</think>')[-1])
+    store["steps"] = steps
+    return store
 
-
-class RetrievePCAP:
-    def __init__(self, store_pcap: StorePCAP, llm: str):
-        self.store_pcap = store_pcap
-        self.llm = llm
-
-    def _get_system_text(self, pcap_data: str) -> str:
-        PACKET_WHISPERER = f"""
-        You are an expert assistant copilot specialized in analyzing packet captures (PCAPs) for troubleshooting and technical analysis. Use the data in the provided to answer user questions accurately.
-
-        Your goal is to provide a clear, descriptive and accurate analysis of the packet capture data, leveraging the packet details from the uploaded .pcap JSON.
-        """
-        return PACKET_WHISPERER
-
-    def get_concerned_files(self, question):
-        all_files = [f"{Path(file).stem}" for file in self.store_pcap.json_paths]
-        st.write(f"Available files: {all_files}")
-        context = f""" Provided the following PCAP files: {str(all_files)} and the question: {question}
-                    return the relevant files for the question, it can be one or all files but never zero files
-                    return as a list of files
-                    """
-        response = self.reasoning_logic(
-            context, question, llm=self.store_pcap.models[0]
-        )
-        files = ast.literal_eval(response.answer)
-        st.write(f"Concerned files: {files}")
-        return files
-
-    def get_multifile_context(self, concerned_files, question):
-        expanded_query = self.query_expansion(question, files=concerned_files)
-        st.write(f"Expanded query: {expanded_query}")
-        if list(expanded_query.keys()) == concerned_files:
-            # Retrieve relevant documents
-            context = ""
-            for file in concerned_files:
-                vector_db = self.store_pcap.vectordb_dict[file]
-                retrieved_docs = vector_db.as_retriever(
-                    search_kwargs={"k": 5}
-                ).get_relevant_documents(expanded_query[file])
-                # self.save_retrieved_docs(retrieved_docs)
-                retrieved_text = "\n\n".join(doc.page_content for doc in retrieved_docs)
-                context += f"\n\n #[{file}]#:{retrieved_text}"
-            return context, expanded_query
-        else:
-            st.error("Error in LLM parsing. Please try again.")
-
-    def get_singlefile_context(self, file, question):
-        context = ""
-        expanded_query = ""
-        vector_db = self.store_pcap.vectordb_dict[file]
-        retrieved_docs = vector_db.as_retriever(
-            search_kwargs={"k": 5}
-        ).get_relevant_documents(question)
-        # self.save_retrieved_docs(retrieved_docs)
-        retrieved_text = "\n\n".join(doc.page_content for doc in retrieved_docs)
-        context += f"\n\n #[{file}]#:{retrieved_text}"
-        return context, expanded_query
-
-    def reasoning_logic(self, context, question, llm):
-        if llm == self.store_pcap.models[0]:
-            lm = dspy.LM("openai/gpt-4o", api_key=os.getenv("OPENAI_API_KEY"))
-        elif llm == self.store_pcap.models[1]:
-            lm = dspy.LM(
-                "openai/llama-3.3-70b-versatile",
-                api_key=os.getenv("GROQ_API_KEY"),
-                api_base="https://api.groq.com/openai/v1",
-            )
-        dspy.configure(lm=lm)
-        respond = dspy.ChainOfThought("context, question -> answer")
-        result = respond(context=context, question=question)
-        # Print the history of prompts
-        # dspy.inspect_history(n=5)
-        return result
-
-    def query_expansion(self, question, files):
-        # Retrieve relevant documents
-        context = f""" Provided the following PCAP files: {str(files)} and the origin question: {question};
-                   Ask best question to ask each file such that it helps in answering the original question
-                   return as a json object with file name as key and question as value.
-                    """
-        response = self.reasoning_logic(
-            context, question, llm=self.store_pcap.models[0]
-        )
-        expanded_query = json.loads(response.answer)
-        return expanded_query
-
-    def chat(self, question):
-        response_placeholders = {}
-
-        concerned_files = self.get_concerned_files(question)
-
-        if len(concerned_files) > 1:
-            context, expanded_query = self.get_multifile_context(
-                concerned_files, question
-            )
-        elif len(concerned_files) == 1:
-            context, expanded_query = self.get_singlefile_context(
-                concerned_files[0], question
-            )
-        else:
-            st.error("Error in file parsing. Please try again.")
-        # Create system text
-        system_text = st.session_state.get(
-            "priming_text", self._get_system_text(context)
-        )
-
-        # Prepend system and retrieved context to the question
-        # TODO: find a better way to parse the context
-        full_prompt = f"{system_text}\n\n Questions asked from the files:{expanded_query} \n\nContext from respective files:\n{context}"
-        # print("Retrieved text:\n", context)
-
-        response_placeholders = self.reasoning_logic(
-            context=full_prompt, question=question, llm=self.llm
-        )
-        return response_placeholders.reasoning, response_placeholders.answer
+def get_store(df, user_input):
+    full_response = step_outliner(df, user_input)
+    store = store_thoughts_and_steps(full_response)
+    return store
 
 
 # Main Application Logic
@@ -454,7 +501,6 @@ def main():
     Frontend.page_intro(logo=os.path.join(root_dir, image_dir))
 
     # Step 1:
-    print("Step 1")
     st.subheader("Step 1:  Upload and convert one or multiple PCAPs upto 1MB each")
     files = Frontend.process_multifile_pcap()
     st.markdown("---")
@@ -464,15 +510,12 @@ def main():
     print("json_files", json_files)
 
     # Step 2:
-    print("Step 2")
     if files:
         st.subheader("Step 2: View uploaded CSV files")
-        Frontend.view_csv_file(json_files)
-        print("step 2.1")
+        st.session_state["df"] = Frontend.view_csv_file(json_files)
         st.markdown("---")
 
     # Step 3:
-    print("Step 3")
     st.subheader("Step 3: Choose the model of choice for the querying")
     models = ("GPT-4o", "Llama-3.3-70b")
     llm = st.selectbox("Choose the model", models)
@@ -481,12 +524,7 @@ def main():
     # Step 4:
     print("Step 4")
     st.subheader("Step 4: Query the file with AI Assistance")
-    if files:
-        print("Step 4.1")
-        store_pcap = StorePCAP(
-            json_paths=json_files, chroma_store=chroma_store, models=models
-        )
-    print("Step 4.2")
+
     # Initialize chat history
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -498,22 +536,24 @@ def main():
 
     # React to user input
     if prompt := st.chat_input("Ask a question about the PCAP data"):
-        chatbot = RetrievePCAP(store_pcap=store_pcap, llm=llm)
-        # Display user message in chat message container
+        df = st.session_state["df"]
+        store = get_store(df, prompt)
+        runner = Task(df, user_query=prompt)
+        steps = runner.execute(store["steps"])
         st.chat_message("user").markdown(prompt)
         # Add user message to chat history
         st.session_state.messages.append({"role": "user", "content": prompt})
 
-        response_reasoning, response_answer = chatbot.chat(prompt)
         # Display assistant response in chat message container
         with st.chat_message("assistant"):
-            st.subheader("Reasoning:")
-            st.markdown(response_reasoning)
-            st.subheader("Answer:")
-            st.markdown(response_answer)
+            for (idx,step) in enumerate(steps):
+                print(f"step {idx}", step)
+                runner.router(step)
+                response = runner.steps_eval[idx]["answer"]
+                st.markdown(response)
         # Add assistant response to chat history
         st.session_state.messages.append(
-            {"role": "assistant", "content": response_answer}
+            {"role": "assistant", "content": response}
         )
 
 
