@@ -229,10 +229,14 @@ class Frontend:
         st.title("Nanites AI PCAP Copilot!!")
         st.markdown("---")
         st.subheader(
-            """Welcome to Nanites AI PCAP Copilot! 🚀 Simply upload one or multiple PCAP files and ask a question about the data."""
+            """Welcome to Nanites AI PCAP Copilot! 🚀 To get started, simply upload a PCAP file (up to 500KB) and ask a question about the data."""
         )
+        st.write("Please follow these guidelines:")
+        st.write("1. Single File Upload: Only one PCAP file can be processed at a time. If you have another file to analyze, please delete the current file and upload the new one.")
+        st.write("2. Question: Ask a full question, which means the question should make sense without any prior context.")
+        st.write("The ability to handle multiple PCAPs concurrently is under development.")
         st.caption(
-            "Note: All information, including PCAPs, JSON files, and vector stores are neither stored nor retained. Data is deleted during or immediately after each session. Please adhere to your organization’s AI policies and governance protocols before uploading any sensitive materials.",
+            "Important Note: Always ensure compliance with your organization’s AI governance policy before uploading any data. Do not upload any sensitive or confidential material.",
             unsafe_allow_html=False,
             help=None,
         )
@@ -279,17 +283,17 @@ class Backend:
         max_run = 0
 
         # Check if path exists
-        if path.exists():
-            # Look through all folders
-            for folder in path.iterdir():
-                if folder.is_dir() and folder.name.startswith("run_"):
-                    try:
-                        # Extract number from folder name
-                        run_num = int(folder.name.split("_")[1])
-                        max_run = max(max_run, run_num)
-                    except (ValueError, IndexError):
-                        # Skip folders that don't match the pattern
-                        continue
+        #if path.exists():
+        #    # Look through all folders
+        #    for folder in path.iterdir():
+        #        if folder.is_dir() and folder.name.startswith("run_"):
+        #            try:
+        #                # Extract number from folder name
+        #                run_num = int(folder.name.split("_")[1])
+        #                max_run = max(max_run, run_num)
+        #            except (ValueError, IndexError):
+        #                # Skip folders that don't match the pattern
+        #                continue
 
         # Return the next run folder name
         return f"run_{max_run + 1}"
@@ -497,12 +501,13 @@ def main():
     root_dir = Path(__file__).parent.parent
     image_dir = "images/Nanites.svg"
     chroma_store = Path(__file__).parent / "chroma_store"
+    pcap_files = []
 
     # Display the introduction page
     Frontend.page_intro(logo=os.path.join(root_dir, image_dir))
 
     # Step 1:
-    st.subheader("Step 1:  Upload and convert a single PCAP[upto 1MB]")
+    st.subheader("Step 1:  Upload and convert a single PCAP(upto 500KB)")
     files = Frontend.process_multifile_pcap()
     print("files", files)
     st.markdown("---")
@@ -538,28 +543,29 @@ def main():
             st.markdown(message["content"])
 
     # React to user input
-    if prompt := st.chat_input("Ask a question about the PCAP data"):
-        with st.spinner("Processing User Question..."):
-            df = st.session_state["df"]
-            store = get_store(df, prompt)
-            runner = Task(df, user_query=prompt)
-            steps = runner.execute(store["steps"])
-            st.chat_message("user").markdown(prompt)
-            # Add user message to chat history
-            st.session_state.messages.append({"role": "user", "content": prompt})
+    if pcap_files:
+        if prompt := st.chat_input(f"Ask a question about the PCAP file: {pcap_files[0].split('/')[-1]}"):
+            with st.spinner("Processing User Question..."):
+                df = st.session_state["df"]
+                store = get_store(df, prompt)
+                runner = Task(df, user_query=prompt)
+                steps = runner.execute(store["steps"])
+                st.chat_message("user").markdown(prompt)
+                # Add user message to chat history
+                st.session_state.messages.append({"role": "user", "content": prompt})
 
-        # Display assistant response in chat message container
-        with st.chat_message("assistant"):
-            with st.spinner("Generating AI Response..."):
-                for (idx,step) in enumerate(steps):
-                    print(f"step {idx}", step)
-                    runner.router(step)
-                    response = runner.steps_eval[idx]["answer"]
-                    st.markdown(response)
-        # Add assistant response to chat history
-        st.session_state.messages.append(
-            {"role": "assistant", "content": response}
-        )
+            # Display assistant response in chat message container
+            with st.chat_message("assistant"):
+                with st.spinner("Generating AI Response..."):
+                    for (idx,step) in enumerate(steps):
+                        print(f"step {idx}", step)
+                        runner.router(step)
+                        response = runner.steps_eval[idx]["answer"]
+                        st.markdown(response)
+            # Add assistant response to chat history
+            st.session_state.messages.append(
+                {"role": "assistant", "content": response}
+            )
 
 
 if __name__ == "__main__":
